@@ -1,0 +1,2 @@
+# Dude engine development/test dependencies.
+pytest==8.3.4

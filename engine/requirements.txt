@@ -1,0 +1,3 @@
+# Dude engine runtime dependencies (Phase 0).
+# Phase 0 is intentionally stdlib-only: no runtime packages required.
+# This file pins the contract; add future runtime deps here.
