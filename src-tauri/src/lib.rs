@@ -2,48 +2,30 @@
 //!
 //! Responsibilities of this layer:
 //! - own the desktop application lifecycle (window, webview, commands)
-//! - spawn/supervise the Python engine child process (added in the engine
-//!   integration step) and expose its status to the UI through Tauri commands
+//! - spawn/supervise the Python engine child process and expose its status to
+//!   the UI through Tauri commands
 //!
 //! The UI never talks to the engine directly; all engine access goes through
 //! commands defined here. See docs/ARCHITECTURE.md for the process model.
 
-use serde::Serialize;
+pub mod engine;
 
-/// High-level engine connection state exposed to the UI.
-/// Mirrors `EngineState` in `src/types.ts`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EngineState {
-    Starting,
-    Connected,
-    Disconnected,
-}
+use engine::{EngineState, Status};
+use tauri::Manager;
 
-/// Status payload returned by the `engine_status` command.
-/// Mirrors `EngineStatus` in `src/types.ts`.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EngineStatus {
-    pub state: EngineState,
-    /// Safe, human-readable detail. Never contains secrets or raw stderr.
-    pub detail: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub protocol_version: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub engine_version: Option<String>,
-}
-
-/// Phase 0 stub: reports the engine as disconnected until the engine
-/// integration step wires the real child-process lifecycle in.
+/// UI-facing status command. Reads a cached snapshot; never blocks on IPC.
+/// The snapshot is refreshed by a periodic health monitor, so the value can
+/// lag by up to one monitor interval (5 s) after a state change.
 #[tauri::command]
-fn engine_status() -> EngineStatus {
-    EngineStatus {
-        state: EngineState::Disconnected,
-        detail: "Engine integration lands in the next step of Phase 0.".into(),
-        protocol_version: None,
-        engine_version: None,
-    }
+fn engine_status(state: tauri::State<EngineState>) -> Status {
+    state.status()
+}
+
+/// On-demand health check: pings the live engine right now and updates the
+/// cached status. Used by the UI's Refresh button.
+#[tauri::command]
+fn engine_health(state: tauri::State<EngineState>) -> Status {
+    state.health_check()
 }
 
 pub fn run() {
@@ -58,7 +40,35 @@ pub fn run() {
     log::info!("Dude desktop host starting (Phase 0)");
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![engine_status])
-        .run(tauri::generate_context!())
-        .expect("error while running Dude desktop host");
+        .manage(EngineState::default())
+        .setup(|app| {
+            // Start the engine on a background thread: window shows immediately
+            // with a "starting" status, then flips to connected/disconnected.
+            // `app_handle.clone()` gives the threads 'static borrows into
+            // app-managed state.
+            let start_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                use tauri::Manager;
+                start_handle.state::<EngineState>().start();
+            });
+
+            // Periodic health monitor: keeps the cached status honest.
+            let monitor_handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                use tauri::Manager;
+                monitor_handle.state::<EngineState>().health_check();
+            });
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![engine_status, engine_health])
+        .build(tauri::generate_context!())
+        .expect("error while building Dude desktop host")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                log::info!("Dude desktop host exiting; stopping engine…");
+                app_handle.state::<EngineState>().shutdown();
+            }
+        });
 }
