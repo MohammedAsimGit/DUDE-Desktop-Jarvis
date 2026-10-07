@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal Phase 0 permissions for the main window: Tauri core defaults only. No plugins, no shell, no fs, no network access.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

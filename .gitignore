@@ -34,3 +34,7 @@ logs/
 # ── OS / editor noise ────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# ── IDE / editor dirs ─────────────────────────────────────────
+.idea/
+.vscode/
