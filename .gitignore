@@ -1,0 +1,36 @@
+# ── Dependencies ─────────────────────────────────────────────
+node_modules/
+
+# ── Build outputs ────────────────────────────────────────────
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# ── Python engine ────────────────────────────────────────────
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# ── Logs ─────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Local data (SQLite and future per-user data) ─────────────
+*.sqlite
+*.sqlite3
+*.db
+
+# ── Secrets and local environment ────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── OS / editor noise ────────────────────────────────────────
+.DS_Store
+Thumbs.db
