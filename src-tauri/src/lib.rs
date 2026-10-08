@@ -50,6 +50,13 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(EngineState::default())
+        // Opt-in Windows startup (off by default; see docs/DEVELOPMENT.md).
+        // The plugin only writes the documented per-user Run key when the
+        // UI explicitly enables it — nothing persists without user action.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             // Sprint 1: the window is created hidden (tauri.conf.json
             // `visible: false`); place it inside the primary work area —

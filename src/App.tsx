@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { EngineState, EngineStatus } from "./types";
+import { fetchAutoStart, setAutoStart } from "./autostart";
 import {
   APPEARANCE_OPTIONS,
   applyAppearance,
@@ -47,6 +48,14 @@ function PinIcon() {
   );
 }
 
+function PowerIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M13 3h-2v10h2V3zm-4 15h2v2H9v-2zm8-8h-2v6h2v-6zM7 10H5c0 3.53 2.61 6.43 6 6.92V21h2v-4.08c3.39-.49 6-3.39 6-6.92h-2c0 2.76-2.24 5-5 5s-5-2.24-5-5z" />
+    </svg>
+  );
+}
+
 function safeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -74,6 +83,8 @@ export default function App() {
   const [appearance, setAppearance] = useState<Appearance>(() =>
     loadAppearance(),
   );
+  const [autoStart, setAutoStartState] = useState(false);
+  const [autoStartBusy, setAutoStartBusy] = useState(false);
 
   // Read the host's cached status snapshot (never blocks on IPC; the host's
   // health monitor refreshes it every 5 s).
@@ -129,6 +140,18 @@ export default function App() {
     };
   }, [fetchSnapshot]);
 
+  // Read the actual registration state once at startup (opt-in; off when
+  // the host cannot answer, with the toggle surfacing any write failures).
+  useEffect(() => {
+    let cancelled = false;
+    void fetchAutoStart().then((value) => {
+      if (!cancelled && value !== null) setAutoStartState(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Apply + persist the appearance; while it is "system", keep following
   // OS color-scheme changes live.
   useEffect(() => {
@@ -167,6 +190,22 @@ export default function App() {
       setOpError(`Always-on-top is unavailable: ${safeError(err)}`);
     }
   }, [topmost]);
+
+  // Opt-in Windows startup: enable/disable through the documented plugin
+  // command; failures stay visible instead of silently reverting.
+  const toggleAutoStart = useCallback(async () => {
+    const next = !autoStart;
+    setAutoStartBusy(true);
+    try {
+      await setAutoStart(next);
+      setAutoStartState(next);
+      setOpError(null);
+    } catch (err) {
+      setOpError(`Could not change startup registration: ${safeError(err)}`);
+    } finally {
+      setAutoStartBusy(false);
+    }
+  }, [autoStart]);
 
   const tone = TONE[status.state];
 
@@ -307,6 +346,27 @@ export default function App() {
                   </button>
                 ))}
               </div>
+            </section>
+
+            <section className="section" aria-label="Startup">
+              <button
+                type="button"
+                className="toggle"
+                aria-pressed={autoStart}
+                disabled={autoStartBusy}
+                onClick={() => void toggleAutoStart()}
+                title="Off by default. When on, Dude launches when you sign in to Windows."
+              >
+                <PowerIcon />
+                <span className="toggle-label">Start with Windows</span>
+                <span className="toggle-state">
+                  {autoStartBusy ? "…" : autoStart ? "On" : "Off"}
+                </span>
+              </button>
+              <p className="hint">
+                Off by default. On sign-in, Windows launches Dude
+                automatically — turn this off to remove it.
+              </p>
             </section>
 
             {opError && (

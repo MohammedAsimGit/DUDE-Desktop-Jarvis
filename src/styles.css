@@ -384,6 +384,14 @@ body {
   color: var(--text-dim);
 }
 
+/* Supporting copy for opt-in settings (what enabling actually does). */
+.hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+
 .segmented {
   display: flex;
   gap: 4px;
