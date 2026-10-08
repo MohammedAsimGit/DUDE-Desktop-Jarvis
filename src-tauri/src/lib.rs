@@ -79,7 +79,12 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![engine_status, engine_health])
+        .invoke_handler(tauri::generate_handler![
+            engine_status,
+            engine_health,
+            window::set_companion_expanded,
+            window::set_companion_topmost
+        ])
         .build(tauri::generate_context!())
         .expect("error while building Dude desktop host")
         .run(|app_handle, event| {

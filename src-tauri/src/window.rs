@@ -9,11 +9,17 @@
 //! dependencies** (and no new capability permissions). The FFI is a thin
 //! edge; all placement math is pure and unit-tested below.
 
-use tauri::{PhysicalPosition, WebviewWindow};
+use tauri::{LogicalSize, PhysicalPosition, WebviewWindow};
 
 /// Gap kept between the companion and the work-area edges, in logical
 /// pixels (scaled to physical pixels per display before use).
 pub const EDGE_MARGIN: i32 = 16;
+
+/// Logical sizes (px) of the two companion states. `COMPACT_SIZE` must stay
+/// in sync with `width`/`height` in tauri.conf.json (the window boots at
+/// compact size); `EXPANDED_SIZE` is applied by `set_companion_expanded`.
+pub const COMPACT_SIZE: (f64, f64) = (272.0, 76.0);
+pub const EXPANDED_SIZE: (f64, f64) = (272.0, 300.0);
 
 /// Usable display rectangle (monitor minus taskbar), physical pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +89,57 @@ pub fn place_companion(window: &WebviewWindow) {
     if let Err(err) = window.set_position(PhysicalPosition::new(x, y)) {
         log::warn!("could not position companion window: {err}");
     }
+}
+
+/// Re-clamp the window into the primary work area after a size change.
+/// Expanding grows downward from the bottom-right origin, which would
+/// otherwise push the panel over the taskbar edge.
+fn clamp_to_work_area(window: &WebviewWindow) {
+    let Some(area) = primary_work_area() else {
+        return;
+    };
+    let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+        return;
+    };
+    let (x, y) = clamp_origin(&area, pos.x, pos.y, size.width, size.height);
+    if let Err(err) = window.set_position(PhysicalPosition::new(x, y)) {
+        log::warn!("could not re-clamp companion window: {err}");
+    }
+}
+
+/// Switch between the compact pill and the expanded panel by resizing the
+/// native window (not CSS): the window manager, taskbar, and hit-testing
+/// all see the real size. The caller-visible failure is returned as a
+/// string so the UI can surface it instead of silently doing nothing.
+#[tauri::command]
+pub fn set_companion_expanded(
+    window: tauri::WebviewWindow,
+    expanded: bool,
+) -> Result<(), String> {
+    let (w, h) = if expanded {
+        EXPANDED_SIZE
+    } else {
+        COMPACT_SIZE
+    };
+    window
+        .set_size(LogicalSize::new(w, h))
+        .map_err(|err| format!("window resize failed: {err}"))?;
+    clamp_to_work_area(&window);
+    Ok(())
+}
+
+/// Toggle the window's always-on-top (topmost) state. Returns the state
+/// that was actually applied so the UI never displays a lie; failures are
+/// surfaced as errors for the UI to render visibly.
+#[tauri::command]
+pub fn set_companion_topmost(
+    window: tauri::WebviewWindow,
+    enabled: bool,
+) -> Result<bool, String> {
+    window
+        .set_always_on_top(enabled)
+        .map_err(|err| format!("always-on-top change failed: {err}"))?;
+    Ok(enabled)
 }
 
 #[cfg(windows)]

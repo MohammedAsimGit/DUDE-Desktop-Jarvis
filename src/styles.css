@@ -1,9 +1,11 @@
-/* Dude — Sprint 1 compact companion stylesheet.
+/* Dude — Sprint 1 companion stylesheet.
  *
  * The Tauri window is frameless and transparent, so this file styles a
- * floating pill rather than a page: `html/body/#root` are fully transparent
- * and the `.pill` paints its own background. Design tokens live in `:root`;
- * a light theme (appearance preference) redefines the same tokens.
+ * floating panel rather than a page: `html/body/#root` are fully
+ * transparent and the `.panel` paints its own background. The window is
+ * resized natively between states; CSS only restyles the two states
+ * (compact pill / expanded panel). Design tokens live in `:root`; a light
+ * theme (appearance preference) redefines the same tokens.
  */
 
 :root {
@@ -11,11 +13,15 @@
   --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --text: #e8ebef;
   --text-dim: #9aa4b2;
+  --accent: #3b82f6;
   --pill-bg: rgba(16, 21, 28, 0.92);
   --pill-bg-hover: rgba(21, 27, 36, 0.97);
   --pill-border: #2b3543;
   --pill-border-hover: #3d4a5c;
   --pill-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  --card-bg: rgba(255, 255, 255, 0.04);
+  --btn-hover: rgba(255, 255, 255, 0.08);
+  --btn-active: rgba(255, 255, 255, 0.13);
   --status-ok: #34d399;
   --status-busy: #fbbf24;
   --status-bad: #f87171;
@@ -46,22 +52,23 @@ body {
   cursor: default;
 }
 
-/* Companion shell: transparent gutter around the floating pill. */
+/* Companion shell: transparent gutter around the floating panel. */
 .companion {
   height: 100%;
   display: flex;
   padding: 6px;
 }
 
-/* The pill doubles as the native drag region (`data-tauri-drag-region`),
+/* The panel doubles as the native drag region (`data-tauri-drag-region`),
  * so it carries clear hover and pressed feedback while still looking like
- * a calm desktop object. */
-.pill {
+ * a calm desktop object. Buttons inside do not start drags. */
+.panel {
   flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 10px;
-  padding: 0 14px;
+  padding: 0 12px;
   border-radius: 999px;
   background: var(--pill-bg);
   border: 1px solid var(--pill-border);
@@ -69,16 +76,33 @@ body {
   cursor: grab;
   transition:
     background-color 140ms ease,
-    border-color 140ms ease;
+    border-color 140ms ease,
+    border-radius 140ms ease;
 }
 
-.pill:hover {
+.panel:hover {
   background: var(--pill-bg-hover);
   border-color: var(--pill-border-hover);
 }
 
-.pill:active {
+.panel:active {
   cursor: grabbing;
+}
+
+/* Always-on-top indicator: the whole panel is edged in the accent color
+ * whenever Dude is pinned above other windows. */
+.companion.is-topmost .panel {
+  border-color: var(--accent);
+}
+
+/* ---- Compact head (both states) ---- */
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  flex: 0 0 auto;
 }
 
 .mark {
@@ -139,6 +163,181 @@ body {
 
 /* Error state: the status text itself carries the color, not just the dot. */
 .tone-bad {
+  color: var(--status-bad);
+}
+
+/* ---- Expanded panel ---- */
+
+.companion.is-expanded .panel {
+  border-radius: 20px;
+  padding: 12px;
+}
+
+.panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Engine status card (Phase 0 content). */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--pill-border);
+  border-radius: 12px;
+  background: var(--card-bg);
+}
+
+.detail {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.meta {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ---- Controls: hover / focus / pressed / disabled / error ---- */
+
+.icon-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--btn-hover);
+  color: var(--text);
+}
+
+.icon-btn:active:not(:disabled) {
+  background: var(--btn-active);
+}
+
+.icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.icon-btn svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
+}
+
+.btn {
+  align-self: flex-start;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #ffffff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 140ms ease;
+}
+
+.btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.btn:active:not(:disabled) {
+  filter: brightness(0.9);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Always-on-top toggle row: pressed state is the visible indicator. */
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--pill-border);
+  border-radius: 10px;
+  background: var(--card-bg);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.toggle:hover:not(:disabled) {
+  border-color: var(--pill-border-hover);
+}
+
+.toggle:active:not(:disabled) {
+  background: var(--btn-active);
+}
+
+.toggle:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.toggle svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: currentColor;
+  color: var(--text-dim);
+  transition: color 140ms ease;
+}
+
+.toggle[aria-pressed="true"] {
+  border-color: var(--accent);
+}
+
+.toggle[aria-pressed="true"] svg {
+  color: var(--accent);
+}
+
+.toggle-label {
+  min-width: 0;
+}
+
+.toggle-state {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.toggle[aria-pressed="true"] .toggle-state {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+/* Failed window operation: visible, non-blocking, announced. */
+.op-error {
+  margin: 0;
+  font-size: 11.5px;
   color: var(--status-bad);
 }
 
