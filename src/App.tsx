@@ -1,38 +1,41 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { EngineStatus } from "./types";
+import type { EngineState, EngineStatus } from "./types";
 
 const STARTING_POLL_MS = 1500;
 const STARTING_POLL_MAX = 20; // ~30 s, mirrors the host's 10 s startup bound
+const STATUS_POLL_MS = 5000; // aligned with the host's 5 s health monitor
+
+/** Short status wording for the compact pill; full detail stays in `title`. */
+const SHORT_LABEL: Record<EngineState, string> = {
+  starting: "Starting…",
+  connected: "Connected",
+  disconnected: "Offline",
+};
+
+const TONE: Record<EngineState, "ok" | "busy" | "bad"> = {
+  starting: "busy",
+  connected: "ok",
+  disconnected: "bad",
+};
 
 /**
- * Minimal Phase 0 shell: shows Dude's name, engine connection status, and a
- * manual refresh. No futuristic interaction design yet — that is a later
- * sprint. All engine interaction goes through the Rust host's Tauri commands;
- * the UI never launches processes or talks to the engine directly.
+ * Dude's compact companion (Sprint 1).
+ *
+ * A small floating pill showing the assistant mark, the name Dude, and a
+ * truthful engine-status line. All engine access goes through the Rust
+ * host's commands — the UI never launches processes or talks to the engine
+ * directly. The pill body is a native drag region; interactive controls
+ * (added with the expanded panel) stay clickable and keyboard reachable.
  */
 export default function App() {
   const [status, setStatus] = useState<EngineStatus>({
     state: "starting",
     detail: "Connecting to the Dude engine…",
   });
-  const [busy, setBusy] = useState(false);
 
-  // Live ping through the host; updates the cached status too.
-  const refresh = useCallback(async () => {
-    setBusy(true);
-    try {
-      setStatus(await invoke<EngineStatus>("engine_health"));
-    } catch {
-      setStatus({
-        state: "disconnected",
-        detail: "Could not query the engine host. See app logs.",
-      });
-    } finally {
-      setBusy(false);
-    }
-  }, []);
-
+  // Read the host's cached status snapshot (never blocks on IPC; the host's
+  // health monitor refreshes it every 5 s).
   const fetchSnapshot = useCallback(async () => {
     try {
       setStatus(await invoke<EngineStatus>("engine_status"));
@@ -44,60 +47,79 @@ export default function App() {
     }
   }, []);
 
-  // The engine starts asynchronously in the host; follow it from "starting"
-  // until it connects or gives up, then stop polling (Refresh is manual live).
+  // Follow the async engine startup with quick polls until it settles, and
+  // keep a slow steady poll running for the whole session so the compact
+  // status never goes stale.
   useEffect(() => {
     let cancelled = false;
     let attempts = 0;
-    const tick = window.setInterval(async () => {
+    const startupTick = window.setInterval(async () => {
       attempts += 1;
       if (cancelled || attempts > STARTING_POLL_MAX) {
-        window.clearInterval(tick);
+        window.clearInterval(startupTick);
         return;
       }
       await fetchSnapshot();
-      setStatus((current) => {
-        if (current.state !== "starting") window.clearInterval(tick);
-        return current;
-      });
     }, STARTING_POLL_MS);
+    const steadyTick = window.setInterval(() => {
+      void fetchSnapshot();
+    }, STATUS_POLL_MS);
     void fetchSnapshot();
     return () => {
       cancelled = true;
-      window.clearInterval(tick);
+      window.clearInterval(startupTick);
+      window.clearInterval(steadyTick);
     };
   }, [fetchSnapshot]);
 
-  const stateColor =
-    status.state === "connected"
-      ? "ok"
-      : status.state === "starting"
-        ? "busy"
-        : "bad";
+  const tone = TONE[status.state];
 
   return (
-    <main className="shell">
-      <h1>Dude</h1>
-      <p className="tagline">Your desktop assistant — foundation build.</p>
-
-      <section className={`status-card status-${stateColor}`}>
-        <div className="status-head">
-          <span className={`dot dot-${stateColor}`} aria-hidden="true" />
-          <span className="state-label">
-            Engine {status.state}
-            {status.protocol_version
-              ? ` · protocol v${status.protocol_version}`
-              : ""}
+    <main className="companion" aria-label="Dude desktop companion">
+      <div className="pill" data-tauri-drag-region="deep">
+        <span className="mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" focusable="false" aria-hidden="true">
+            <defs>
+              <linearGradient id="dudeMark" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#3b82f6" />
+                <stop offset="100%" stopColor="#1d4ed8" />
+              </linearGradient>
+            </defs>
+            <circle cx="16" cy="16" r="15" fill="url(#dudeMark)" />
+            <circle
+              cx="16"
+              cy="16"
+              r="13.9"
+              fill="none"
+              stroke="rgba(255, 255, 255, 0.28)"
+              strokeWidth="1.4"
+            />
+            <text
+              x="16"
+              y="21.4"
+              textAnchor="middle"
+              fontFamily="'Segoe UI Variable Text', 'Segoe UI', sans-serif"
+              fontSize="16.5"
+              fontWeight="700"
+              fill="#ffffff"
+            >
+              D
+            </text>
+          </svg>
+        </span>
+        <span className="identity">
+          <span className="name">Dude</span>
+          <span
+            className={`status tone-${tone}`}
+            role="status"
+            aria-label={`Engine ${status.state}. ${status.detail}`}
+            title={status.detail}
+          >
+            <span className="dot" aria-hidden="true" />
+            {SHORT_LABEL[status.state]}
           </span>
-        </div>
-        <p className="detail">{status.detail}</p>
-        {status.engine_version && (
-          <p className="meta">engine {status.engine_version}</p>
-        )}
-        <button onClick={() => void refresh()} disabled={busy}>
-          {busy ? "Checking…" : "Refresh status"}
-        </button>
-      </section>
+        </span>
+      </div>
     </main>
   );
 }

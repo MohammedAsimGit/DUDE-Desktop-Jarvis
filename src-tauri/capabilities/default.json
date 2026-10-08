@@ -1,7 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimal Phase 0 permissions for the main window: Tauri core defaults only. No plugins, no shell, no fs, no network access.",
+  "description": "Minimal Sprint 1 permissions for the main window: Tauri core defaults, plus window start-dragging for the companion's defined drag region. Explicitly denies drag-region double-click maximize (the companion is fixed-size). No shell, no fs, no network access.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:deny-internal-toggle-maximize"
+  ]
 }

@@ -1,119 +1,160 @@
+/* Dude — Sprint 1 compact companion stylesheet.
+ *
+ * The Tauri window is frameless and transparent, so this file styles a
+ * floating pill rather than a page: `html/body/#root` are fully transparent
+ * and the `.pill` paints its own background. Design tokens live in `:root`;
+ * a light theme (appearance preference) redefines the same tokens.
+ */
+
 :root {
   color-scheme: dark;
-  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
-  background: #0e1116;
-  color: #e6e8eb;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --text: #e8ebef;
+  --text-dim: #9aa4b2;
+  --pill-bg: rgba(16, 21, 28, 0.92);
+  --pill-bg-hover: rgba(21, 27, 36, 0.97);
+  --pill-border: #2b3543;
+  --pill-border-hover: #3d4a5c;
+  --pill-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  --status-ok: #34d399;
+  --status-busy: #fbbf24;
+  --status-bad: #f87171;
+  --focus-ring: #60a5fa;
 }
 
 * {
   box-sizing: border-box;
 }
 
-body {
+html,
+body,
+#root {
+  height: 100%;
   margin: 0;
-  min-height: 100vh;
-  background: radial-gradient(1200px 600px at 50% -10%, #1a2029 0%, #0e1116 60%);
+  padding: 0;
+  background: transparent; /* the window itself is transparent */
+  overflow: hidden;
 }
 
-.shell {
-  max-width: 520px;
-  margin: 0 auto;
-  padding: 48px 24px;
+body {
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
 }
 
-h1 {
-  font-size: 2.4rem;
-  margin: 0 0 4px;
-  letter-spacing: 0.5px;
+/* Companion shell: transparent gutter around the floating pill. */
+.companion {
+  height: 100%;
+  display: flex;
+  padding: 6px;
 }
 
-.tagline {
-  color: #9aa4b2;
-  margin: 0 0 32px;
-}
-
-.status-card {
-  border: 1px solid #232b36;
-  border-radius: 14px;
-  padding: 20px;
-  background: #141a22;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-}
-
-.status-ok {
-  border-color: #1f4d38;
-}
-
-.status-busy {
-  border-color: #4d431f;
-}
-
-.status-bad {
-  border-color: #4d1f2b;
-}
-
-.status-head {
+/* The pill doubles as the native drag region (`data-tauri-drag-region`),
+ * so it carries clear hover and pressed feedback while still looking like
+ * a calm desktop object. */
+.pill {
+  flex: 1;
   display: flex;
   align-items: center;
   gap: 10px;
-  font-weight: 600;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  border: 1px solid var(--pill-border);
+  box-shadow: var(--pill-shadow);
+  cursor: grab;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.pill:hover {
+  background: var(--pill-bg-hover);
+  border-color: var(--pill-border-hover);
+}
+
+.pill:active {
+  cursor: grabbing;
+}
+
+.mark {
+  display: block;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+}
+
+.mark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.name {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+}
+
+/* Engine status line: short label visible, full detail on hover via title
+ * and to screen readers via aria-label (set on the element itself). */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
 }
 
 .dot {
-  width: 12px;
-  height: 12px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  display: inline-block;
+  flex: 0 0 auto;
+  background: var(--status-busy);
 }
 
-.dot-ok {
-  background: #34d399;
-  box-shadow: 0 0 10px rgba(52, 211, 153, 0.6);
+.tone-ok .dot {
+  background: var(--status-ok);
 }
 
-.dot-busy {
-  background: #fbbf24;
-  box-shadow: 0 0 10px rgba(251, 191, 36, 0.6);
+.tone-busy .dot {
+  background: var(--status-busy);
 }
 
-.dot-bad {
-  background: #f87171;
-  box-shadow: 0 0 10px rgba(248, 113, 113, 0.6);
+.tone-bad .dot {
+  background: var(--status-bad);
 }
 
-.state-label {
-  text-transform: capitalize;
+/* Error state: the status text itself carries the color, not just the dot. */
+.tone-bad {
+  color: var(--status-bad);
 }
 
-.detail {
-  color: #9aa4b2;
-  margin: 12px 0 4px;
+/* Keyboard focus is always visible on interactive controls. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
-.meta {
-  color: #6b7684;
-  font-size: 0.85rem;
-  margin: 4px 0 16px;
-}
-
-button {
-  background: #2563eb;
-  color: white;
-  border: none;
-  border-radius: 10px;
-  padding: 10px 18px;
-  font-size: 0.95rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-button:hover:not(:disabled) {
-  background: #1d4ed8;
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
+/* Respect reduced-motion: state changes stay instant, never animated. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

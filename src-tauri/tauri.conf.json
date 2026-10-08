@@ -14,12 +14,19 @@
       {
         "label": "main",
         "title": "Dude",
-        "width": 520,
-        "height": 460,
-        "minWidth": 380,
-        "minHeight": 340,
-        "resizable": true,
-        "center": true
+        "width": 272,
+        "height": 76,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": false,
+        "maximizable": false,
+        "minimizable": true,
+        "closable": true,
+        "center": false,
+        "visible": false,
+        "focus": true
       }
     ],
     "security": {

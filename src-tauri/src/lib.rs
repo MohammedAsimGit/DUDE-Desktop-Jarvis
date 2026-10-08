@@ -9,6 +9,7 @@
 //! commands defined here. See docs/ARCHITECTURE.md for the process model.
 
 pub mod engine;
+pub mod window;
 
 use engine::{EngineState, Status};
 use tauri::Manager;
@@ -42,6 +43,22 @@ pub fn run() {
     tauri::Builder::default()
         .manage(EngineState::default())
         .setup(|app| {
+            // Sprint 1: the window is created hidden (tauri.conf.json
+            // `visible: false`); place it inside the primary work area —
+            // near the bottom-right, clear of the taskbar — before showing
+            // it, so it never appears at an invalid or off-screen position.
+            match app.get_webview_window("main") {
+                Some(win) => {
+                    window::place_companion(&win);
+                    if let Err(err) = win.show() {
+                        log::error!("could not show companion window: {err}");
+                    } else if let Err(err) = win.set_focus() {
+                        log::warn!("could not focus companion window: {err}");
+                    }
+                }
+                None => log::error!("main window not found; companion will not be shown"),
+            }
+
             // Start the engine on a background thread: window shows immediately
             // with a "starting" status, then flips to connected/disconnected.
             // `app_handle.clone()` gives the threads 'static borrows into
