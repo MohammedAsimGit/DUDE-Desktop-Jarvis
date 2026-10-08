@@ -12,7 +12,15 @@ pub mod engine;
 pub mod window;
 
 use engine::{EngineState, Status};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
+
+/// Set once the user chooses Quit from the tray so the close-to-hide
+/// interception lets the final shutdown close through instead of hiding
+/// the window again.
+static QUITTING: AtomicBool = AtomicBool::new(false);
 
 /// UI-facing status command. Reads a cached snapshot; never blocks on IPC.
 /// The snapshot is refreshed by a periodic health monitor, so the value can
@@ -59,6 +67,46 @@ pub fn run() {
                 None => log::error!("main window not found; companion will not be shown"),
             }
 
+            // System tray: exactly the three essential actions. The menu
+            // opens on right-click; left-click reveals the companion.
+            let show_item = MenuItem::with_id(app, "show", "Show Dude", true, None::<&str>)?;
+            let hide_item = MenuItem::with_id(app, "hide", "Hide Dude", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit Dude", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show_item, &hide_item, &quit_item])?;
+            let tray_click_app = app.handle().clone();
+            let tray = TrayIconBuilder::with_id("main-tray")
+                .tooltip("Dude")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => window::show_companion(app),
+                    "hide" => window::hide_companion(app),
+                    "quit" => {
+                        QUITTING.store(true, Ordering::SeqCst);
+                        app.exit(0);
+                    }
+                    other => log::warn!("unhandled tray menu id: {other}"),
+                })
+                .on_tray_icon_event(move |_tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        window::show_companion(&tray_click_app);
+                    }
+                });
+            let tray = match app.default_window_icon() {
+                Some(icon) => tray.icon(icon.clone()),
+                None => tray,
+            };
+            if let Err(err) = tray.build(app) {
+                // The app must keep working without a tray (e.g. restricted
+                // shell); surface the failure in the log instead of dying.
+                log::error!("system tray unavailable: {err}");
+            }
+
             // Start the engine on a background thread: window shows immediately
             // with a "starting" status, then flips to connected/disconnected.
             // `app_handle.clone()` gives the threads 'static borrows into
@@ -87,10 +135,22 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building Dude desktop host")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|app_handle, event| match event {
+            // Frameless windows have no titlebar close button, but Alt+F4
+            // still arrives here: hide to the tray instead of exiting so the
+            // engine keeps serving. Quit (tray) is the real exit path.
+            tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } if !QUITTING.load(Ordering::SeqCst) => {
+                api.prevent_close();
+                log::info!("close requested; hiding Dude (quit from the tray)");
+                window::hide_companion(app_handle);
+            }
+            tauri::RunEvent::Exit => {
                 log::info!("Dude desktop host exiting; stopping engine…");
                 app_handle.state::<EngineState>().shutdown();
             }
+            _ => {}
         });
 }

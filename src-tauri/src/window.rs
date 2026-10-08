@@ -9,7 +9,7 @@
 //! dependencies** (and no new capability permissions). The FFI is a thin
 //! edge; all placement math is pure and unit-tested below.
 
-use tauri::{LogicalSize, PhysicalPosition, WebviewWindow};
+use tauri::{LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 
 /// Gap kept between the companion and the work-area edges, in logical
 /// pixels (scaled to physical pixels per display before use).
@@ -140,6 +140,41 @@ pub fn set_companion_topmost(
         .set_always_on_top(enabled)
         .map_err(|err| format!("always-on-top change failed: {err}"))?;
     Ok(enabled)
+}
+
+/// Show and focus the companion (tray Show / left-click), restoring it
+/// from a minimized or hidden state first.
+pub fn show_companion(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        log::warn!("main window missing; cannot show companion");
+        return;
+    };
+    if let Ok(true) = window.is_minimized() {
+        if let Err(err) = window.unminimize() {
+            log::warn!("could not restore companion from minimized state: {err}");
+        }
+    }
+    match window.show() {
+        Ok(()) => {
+            if let Err(err) = window.set_focus() {
+                log::warn!("could not focus companion: {err}");
+            }
+        }
+        Err(err) => log::warn!("could not show companion: {err}"),
+    }
+}
+
+/// Hide the companion (tray Hide / close request). The app keeps running
+/// with its tray icon; Quit is the only path that exits the process and
+/// stops the engine.
+pub fn hide_companion(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        log::warn!("main window missing; cannot hide companion");
+        return;
+    };
+    if let Err(err) = window.hide() {
+        log::warn!("could not hide companion: {err}");
+    }
 }
 
 #[cfg(windows)]

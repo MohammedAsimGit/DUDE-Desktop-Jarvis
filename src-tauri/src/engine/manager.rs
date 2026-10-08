@@ -69,13 +69,19 @@ pub struct EngineHandle {
     /// True when the engine exited on its own (with a clean exit code) in
     /// response to the shutdown op within the grace period.
     exited_on_request: AtomicBool,
+    /// True once `stop()` has completed; Drop then skips its last-resort
+    /// cleanup so a clean shutdown is never followed by a redundant
+    /// shutdown write to a closed pipe (noisy false "not delivered" warning).
+    stopped: AtomicBool,
 }
 
 impl Drop for EngineHandle {
     fn drop(&mut self) {
         // Last-resort cleanup if the owner forgot to call stop().
-        self.send_shutdown(250);
-        self.kill();
+        if !self.stopped.load(Ordering::SeqCst) {
+            self.send_shutdown(250);
+            self.kill();
+        }
     }
 }
 
@@ -161,6 +167,7 @@ impl EngineHandle {
             reader: Mutex::new(Some(reader)),
             engine_version: Mutex::new(None),
             exited_on_request: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
         };
 
         // Prove readiness with a bounded health request.
@@ -196,6 +203,7 @@ impl EngineHandle {
     pub fn stop(&self, grace: Duration) {
         self.send_shutdown(grace.as_millis().max(500) as u64);
         self.kill();
+        self.stopped.store(true, Ordering::SeqCst);
     }
 
     /// Send the shutdown op and wait up to `grace_ms` for the process to exit.
