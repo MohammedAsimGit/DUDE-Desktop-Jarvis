@@ -19,7 +19,7 @@ pub const EDGE_MARGIN: i32 = 16;
 /// in sync with `width`/`height` in tauri.conf.json (the window boots at
 /// compact size); `EXPANDED_SIZE` is applied by `set_companion_expanded`.
 pub const COMPACT_SIZE: (f64, f64) = (272.0, 76.0);
-pub const EXPANDED_SIZE: (f64, f64) = (272.0, 300.0);
+pub const EXPANDED_SIZE: (f64, f64) = (272.0, 372.0);
 
 /// Usable display rectangle (monitor minus taskbar), physical pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

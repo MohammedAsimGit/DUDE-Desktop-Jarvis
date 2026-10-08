@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { EngineState, EngineStatus } from "./types";
+import {
+  APPEARANCE_OPTIONS,
+  applyAppearance,
+  loadAppearance,
+  saveAppearance,
+  watchSystemTheme,
+  type Appearance,
+} from "./theme";
 
 const STARTING_POLL_MS = 1500;
 const STARTING_POLL_MAX = 20; // ~30 s, mirrors the host's 10 s startup bound
@@ -63,6 +71,9 @@ export default function App() {
   const [topmost, setTopmost] = useState(false);
   const [busy, setBusy] = useState(false);
   const [opError, setOpError] = useState<string | null>(null);
+  const [appearance, setAppearance] = useState<Appearance>(() =>
+    loadAppearance(),
+  );
 
   // Read the host's cached status snapshot (never blocks on IPC; the host's
   // health monitor refreshes it every 5 s).
@@ -117,6 +128,15 @@ export default function App() {
       window.clearInterval(steadyTick);
     };
   }, [fetchSnapshot]);
+
+  // Apply + persist the appearance; while it is "system", keep following
+  // OS color-scheme changes live.
+  useEffect(() => {
+    applyAppearance(appearance);
+    saveAppearance(appearance);
+    if (appearance !== "system") return;
+    return watchSystemTheme(() => appearance);
+  }, [appearance]);
 
   // Resize the native window (Rust command), then mirror the result. A
   // failed resize keeps the current state and shows the reason.
@@ -195,15 +215,26 @@ export default function App() {
           </span>
           <span className="identity">
             <span className="name">Dude</span>
-            <span
-              className={`status tone-${tone}`}
-              role="status"
-              aria-label={`Engine ${status.state}. ${status.detail}`}
-              title={status.detail}
-            >
-              <span className="dot" aria-hidden="true" />
-              {SHORT_LABEL[status.state]}
-            </span>
+            {opError && !expanded ? (
+              // A failed expand leaves us in the compact state, so the
+              // error takes the status line's slot — it must stay visible.
+              <span className="status tone-bad" role="alert" title={opError}>
+                <span className="dot" aria-hidden="true" />
+                <span className="status-text">{opError}</span>
+              </span>
+            ) : (
+              <span
+                className={`status tone-${tone}`}
+                role="status"
+                aria-label={`Engine ${status.state}. ${status.detail}`}
+                title={status.detail}
+              >
+                <span className="dot" aria-hidden="true" />
+                <span className="status-text">
+                  {SHORT_LABEL[status.state]}
+                </span>
+              </span>
+            )}
           </span>
           <button
             type="button"
@@ -251,6 +282,32 @@ export default function App() {
               <span className="toggle-label">Always on top</span>
               <span className="toggle-state">{topmost ? "On" : "Off"}</span>
             </button>
+
+            <section className="section" aria-label="Appearance">
+              <p className="section-label">Appearance</p>
+              <div className="segmented">
+                {APPEARANCE_OPTIONS.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    className="seg"
+                    aria-pressed={appearance === option}
+                    title={
+                      option === "system"
+                        ? "Follow the Windows light/dark setting"
+                        : `Use the ${option} theme`
+                    }
+                    onClick={() => setAppearance(option)}
+                  >
+                    {option === "system"
+                      ? "System"
+                      : option === "light"
+                        ? "Light"
+                        : "Dark"}
+                  </button>
+                ))}
+              </div>
+            </section>
 
             {opError && (
               <p className="op-error" role="alert">
