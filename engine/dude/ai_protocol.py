@@ -20,6 +20,13 @@ chunked updates without inventing a new listener or network service. The engine
 owns the stream lifetime; it cancels or discards it on shutdown and on explicit
 cancel.
 
+Operational envelope rule (important):
+
+Op handlers return *plain payload dicts* and raise ProtocolError on failure.
+The engine's ``handle_frame`` builds the single response envelope
+(``{v, id, ok, result|error}``). Frame builders here therefore return payload
+shapes, not complete envelopes — this keeps the wire un-nested.
+
 Constants here are synced with the Rust client types in
 `src-tauri/src/engine/client.rs` (protocol version, op names, error codes).
 """
@@ -67,9 +74,8 @@ def ai_status_frame(
     can_stream: bool,
     tool_count: int,
 ) -> dict:
+    """Payload for the ai_status response result."""
     return {
-        "v": AI_PROTOCOL_VERSION,
-        "type": "ai_status",
         "configured": configured,
         "provider": provider,
         "can_stream": can_stream,
@@ -78,50 +84,31 @@ def ai_status_frame(
 
 
 def ai_conversation_frame(message_count: int) -> dict:
-    return {
-        "v": AI_PROTOCOL_VERSION,
-        "type": "ai_conversation",
-        "message_count": message_count,
-    }
+    """Payload for the ai_conversation response result."""
+    return {"message_count": message_count}
 
 
 def ai_submit_result_frame(
-    op: str,
-    id: Optional[str],
     response: str,
     used_tools: bool,
     tool_names: list[str],
 ) -> dict:
-    from . import PROTOCOL_VERSION
-
+    """Payload for the ai_submit response result."""
     return {
-        "v": PROTOCOL_VERSION,
-        "id": id,
-        "op": op,
-        "ok": True,
-        "result": {
-            "response": response,
-            "used_tools": used_tools,
-            "tool_names": list(tool_names),
-        },
+        "response": response,
+        "used_tools": used_tools,
+        "tool_names": list(tool_names),
     }
 
 
-def ai_stream_start_result_frame(op: str, id: Optional[str], stream_id: str) -> dict:
-    from . import PROTOCOL_VERSION
-
-    return {
-        "v": PROTOCOL_VERSION,
-        "id": id,
-        "op": op,
-        "ok": True,
-        "result": {"stream_id": stream_id},
-    }
+def ai_stream_start_result_frame(stream_id: str) -> dict:
+    """Payload for the ai_stream_start response result."""
+    return {"stream_id": stream_id}
 
 
 def ai_stream_next_frame(stream_id: str, chunk_index: int, chunk_text: str) -> dict:
+    """Chunk payload carried inside the response result for ai_stream_next."""
     return {
-        "v": AI_PROTOCOL_VERSION,
         "type": "ai_stream_chunk",
         "stream_id": stream_id,
         "chunk_index": chunk_index,
@@ -130,8 +117,8 @@ def ai_stream_next_frame(stream_id: str, chunk_index: int, chunk_text: str) -> d
 
 
 def ai_stream_done_frame(stream_id: str, final_text: str) -> dict:
+    """Terminal payload carried inside the response result for ai_stream_next."""
     return {
-        "v": AI_PROTOCOL_VERSION,
         "type": "ai_stream_done",
         "stream_id": stream_id,
         "final": final_text,
@@ -139,49 +126,18 @@ def ai_stream_done_frame(stream_id: str, final_text: str) -> dict:
 
 
 def ai_stream_cancel_result_frame(stream_id: str) -> dict:
-    from . import PROTOCOL_VERSION
-
-    return {
-        "v": PROTOCOL_VERSION,
-        "id": None,
-        "op": OP_AI_STREAM_CANCEL,
-        "ok": True,
-        "result": {"stream_id": stream_id, "cancelled": True},
-    }
+    """Payload for the ai_stream_cancel response result."""
+    return {"stream_id": stream_id, "cancelled": True}
 
 
-def ai_clear_result_frame(id: Optional[str]) -> dict:
-    from . import PROTOCOL_VERSION
-
-    return {
-        "v": PROTOCOL_VERSION,
-        "id": id,
-        "op": OP_AI_CLEAR,
-        "ok": True,
-        "result": {"cleared": True},
-    }
+def ai_clear_result_frame() -> dict:
+    """Payload for the ai_clear / ai_reset response result."""
+    return {"cleared": True}
 
 
 def ai_tools_frame(tools: list[dict[str, Any]]) -> dict:
-    from . import PROTOCOL_VERSION
-
-    return {
-        "v": PROTOCOL_VERSION,
-        "type": "ai_tools",
-        "tools": tools,
-    }
-
-
-def ai_error_frame(op: str, id: Optional[str], code: str, message: str) -> dict:
-    from . import PROTOCOL_VERSION
-
-    return {
-        "v": PROTOCOL_VERSION,
-        "id": id,
-        "op": op,
-        "ok": False,
-        "error": {"code": code, "message": message},
-    }
+    """Payload for the ai_tools response result."""
+    return {"tools": tools}
 
 
 def normalize_ai_state(raw: Any) -> str:

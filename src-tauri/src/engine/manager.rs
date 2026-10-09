@@ -11,7 +11,7 @@
 //! - if the host dies without warning, the engine sees stdin EOF and exits
 //!   by itself — no orphans.
 
-use super::client::{request_frame, EngineError, RequestIds};
+use super::client::{ai_request, request_frame, EngineError, RequestIds};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -97,6 +97,42 @@ fn spawn_error(name: &str, detail: std::io::Error) -> EngineError {
         "could not start the Dude engine. Check that Python is installed and enabled in settings."
             .into(),
     )
+}
+
+/// Engine settings resolved from the environment (documented in DEVELOPMENT.md).
+pub struct EngineSettings {
+    pub python_path: String,
+    pub engine_dir: String,
+}
+
+impl EngineSettings {
+    /// Resolve settings from environment with sane development defaults.
+    ///
+    /// In dev the Tauri process runs with CWD `src-tauri`, so relative engine
+    /// dir paths resolve against the repo root (one ancestor up).
+    /// `DUDE_PYTHON` overrides the interpreter and `DUDE_ENGINE_DIR` overrides
+    /// the engine package directory (both used by smoke tests). Production
+    /// packaging is a later phase; this seam is where a bundled engine would
+    /// plug in.
+    pub fn from_env() -> Self {
+        let python_path = std::env::var("DUDE_PYTHON").unwrap_or_else(|_| "python".into());
+        let engine_dir_var =
+            std::env::var("DUDE_ENGINE_DIR").unwrap_or_else(|_| "engine".into());
+        let dir = std::path::PathBuf::from(&engine_dir_var);
+        let engine_dir = if dir.is_absolute() {
+            dir
+        } else {
+            let repo_root = std::env::current_dir()
+                .ok()
+                .and_then(|cwd| cwd.ancestors().nth(1).map(|p| p.to_path_buf()))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            repo_root.join(dir)
+        };
+        EngineSettings {
+            python_path,
+            engine_dir: engine_dir.to_string_lossy().into_owned(),
+        }
+    }
 }
 
 impl EngineHandle {
@@ -303,6 +339,59 @@ impl EngineHandle {
                     responses = new_guard;
                     // Timeout re-checks the exit/failure/response conditions
                     // before giving up at the top of the next iteration.
+                    if wait_result.timed_out() {
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Voice-specific request helper: uses the same v1 framing and correlation
+    /// as the rest of the protocol, so voice ops stay on the existing channel.
+    pub fn voice_request(&self, op: &str, timeout: Duration) -> Result<Value, EngineError> {
+        self.request(op, timeout)
+    }
+
+    /// AI request helper with arguments. Uses the same v1 framing; the args
+    /// payload is serialized into the request's `args` object.
+    pub fn ai_request_with_args(
+        &self,
+        op: &str,
+        args: Value,
+        timeout: Duration,
+    ) -> Result<Value, EngineError> {
+        if self.shared.stdout_closed.load(Ordering::SeqCst) {
+            return Err(EngineError::EngineExited);
+        }
+        let id = self.ids.next();
+        self.send_request_line(&ai_request(&id, op, args))?;
+
+        let deadline = Instant::now() + timeout;
+        let mut responses = self.shared.responses.lock().unwrap();
+        loop {
+            if let Some(resp) = responses.remove(&id) {
+                break self.interpret(resp);
+            }
+            if self.shared.stdout_closed.load(Ordering::SeqCst) {
+                break Err(EngineError::EngineExited);
+            }
+            {
+                let mut failure = self.shared.failure.lock().unwrap();
+                if failure.is_some() {
+                    break Err(failure.take().unwrap());
+                }
+            }
+            let remaining = deadline.checked_duration_since(Instant::now());
+            match remaining {
+                None => break Err(EngineError::Timeout),
+                Some(budget) => {
+                    let (new_guard, wait_result) = self
+                        .shared
+                        .cv
+                        .wait_timeout(responses, budget)
+                        .unwrap();
+                    responses = new_guard;
                     if wait_result.timed_out() {
                         continue;
                     }

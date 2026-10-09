@@ -47,8 +47,6 @@ from .voice_protocol import (
     OP_VOICE_STOP,
     OP_VOICE_STATUS,
     normalize_voice_result,
-    voice_error_frame,
-    voice_result_frame,
     voice_status_frame,
 )
 from .ai import AIOrchestrator, AINotConfigured, DeterministicAIProvider, ToolRegistry, ToolSchema
@@ -70,7 +68,6 @@ from .ai_protocol import (
     OP_AI_TOOLS,
     ai_clear_result_frame,
     ai_conversation_frame,
-    ai_error_frame,
     ai_stream_cancel_result_frame,
     ai_stream_done_frame,
     ai_stream_next_frame,
@@ -155,62 +152,32 @@ class Engine:
 
     def op_ai_submit(self, args: Mapping[str, Any]) -> dict:
         if not isinstance(args.get("text"), str) or not args.get("text"):
-            return ai_error_frame(
-                OP_AI_SUBMIT,
-                args.get("id"),
-                ERR_AI_BAD_REQUEST,
-                "message text is required",
-            )
+            raise ProtocolError(ERR_AI_BAD_REQUEST, "message text is required")
         if self._ai_generating:
-            return ai_error_frame(
-                OP_AI_SUBMIT,
-                args.get("id"),
-                ERR_AI_BUSY,
-                "a generation is already in progress",
-            )
+            raise ProtocolError(ERR_AI_BUSY, "a generation is already in progress")
         self._ai_generating = True
         try:
             result = self.ai.submit(str(args["text"]))
             return ai_submit_result_frame(
-                OP_AI_SUBMIT,
-                args.get("id"),
                 result.text_or_fallback("I received your message."),
                 bool(result.used_tools),
                 normalize_tool_names([]),
             )
         except AINotConfigured:
-            return ai_error_frame(
-                OP_AI_SUBMIT,
-                args.get("id"),
-                ERR_AI_NOT_CONFIGURED,
-                "no AI provider is configured",
-            )
+            raise ProtocolError(
+                ERR_AI_NOT_CONFIGURED, "no AI provider is configured"
+            ) from None
         except AIError:
             logger.exception("AI submit failed")
-            return ai_error_frame(
-                OP_AI_SUBMIT,
-                args.get("id"),
-                ERR_AI_INTERNAL,
-                "AI request failed",
-            )
+            raise ProtocolError(ERR_AI_INTERNAL, "AI request failed") from None
         finally:
             self._ai_generating = False
 
     def op_ai_stream_start(self, args: Mapping[str, Any]) -> dict:
         if not isinstance(args.get("text"), str) or not args.get("text"):
-            return ai_error_frame(
-                OP_AI_STREAM_START,
-                args.get("id"),
-                ERR_AI_BAD_REQUEST,
-                "message text is required",
-            )
+            raise ProtocolError(ERR_AI_BAD_REQUEST, "message text is required")
         if self._ai_generating:
-            return ai_error_frame(
-                OP_AI_STREAM_START,
-                args.get("id"),
-                ERR_AI_BUSY,
-                "a generation is already in progress",
-            )
+            raise ProtocolError(ERR_AI_BUSY, "a generation is already in progress")
         self._ai_generating = True
         stream_id = f"stream-{self._ai_stream_id_counter}"
         self._ai_stream_id_counter += 1
@@ -226,52 +193,29 @@ class Engine:
                 "done": False,
                 "produced": False,
             }
-            return ai_stream_start_result_frame(
-                OP_AI_STREAM_START,
-                args.get("id"),
-                stream_id,
-            )
+            return ai_stream_start_result_frame(stream_id)
         except AINotConfigured:
             self._ai_generating = False
-            return ai_error_frame(
-                OP_AI_STREAM_START,
-                args.get("id"),
-                ERR_AI_NOT_CONFIGURED,
-                "no AI provider is configured",
-            )
+            raise ProtocolError(
+                ERR_AI_NOT_CONFIGURED, "no AI provider is configured"
+            ) from None
         except AIError:
             self._ai_generating = False
             logger.exception("AI stream start failed")
-            return ai_error_frame(
-                OP_AI_STREAM_START,
-                args.get("id"),
-                ERR_AI_INTERNAL,
-                "AI streaming is not available",
-            )
+            raise ProtocolError(
+                ERR_AI_INTERNAL, "AI streaming is not available"
+            ) from None
 
     def op_ai_stream_next(self, args: Mapping[str, Any]) -> dict:
         stream_id = args.get("stream_id")
         if not isinstance(stream_id, str) or not stream_id:
-            return ai_error_frame(
-                OP_AI_STREAM_NEXT,
-                args.get("id"),
-                ERR_AI_BAD_REQUEST,
-                "stream_id is required",
-            )
+            raise ProtocolError(ERR_AI_BAD_REQUEST, "stream_id is required")
         stream = self._ai_streams.get(stream_id)
         if stream is None:
-            return ai_error_frame(
-                OP_AI_STREAM_NEXT,
-                args.get("id"),
-                ERR_AI_STREAM_NOT_FOUND,
-                "stream not found",
-            )
+            raise ProtocolError(ERR_AI_STREAM_NOT_FOUND, "stream not found")
         if stream["done"]:
-            return ai_error_frame(
-                OP_AI_STREAM_NEXT,
-                args.get("id"),
-                ERR_AI_STREAM_ALREADY_FINISHED,
-                "stream already finished",
+            raise ProtocolError(
+                ERR_AI_STREAM_ALREADY_FINISHED, "stream already finished"
             )
 
         # First pull: capture the provider's chunk iterator eagerly so later
@@ -344,26 +288,13 @@ class Engine:
     def op_ai_stream_cancel(self, args: Mapping[str, Any]) -> dict:
         stream_id = args.get("stream_id")
         if not isinstance(stream_id, str) or not stream_id:
-            return ai_error_frame(
-                OP_AI_STREAM_CANCEL,
-                args.get("id"),
-                ERR_AI_BAD_REQUEST,
-                "stream_id is required",
-            )
+            raise ProtocolError(ERR_AI_BAD_REQUEST, "stream_id is required")
         stream = self._ai_streams.get(stream_id)
         if stream is None:
-            return ai_error_frame(
-                OP_AI_STREAM_CANCEL,
-                args.get("id"),
-                ERR_AI_STREAM_NOT_FOUND,
-                "stream not found",
-            )
+            raise ProtocolError(ERR_AI_STREAM_NOT_FOUND, "stream not found")
         if stream["done"]:
-            return ai_error_frame(
-                OP_AI_STREAM_CANCEL,
-                args.get("id"),
-                ERR_AI_STREAM_ALREADY_FINISHED,
-                "stream already finished",
+            raise ProtocolError(
+                ERR_AI_STREAM_ALREADY_FINISHED, "stream already finished"
             )
         stream["done"] = True
         self._ai_generating = False
@@ -378,11 +309,11 @@ class Engine:
 
     def op_ai_clear(self, args: Mapping[str, Any]) -> dict:
         self.ai.reset_conversation()
-        return ai_clear_result_frame(args.get("id"))
+        return ai_clear_result_frame()
 
     def op_ai_reset(self, args: Mapping[str, Any]) -> dict:
         self.ai.reset_conversation()
-        return ai_clear_result_frame(args.get("id"))
+        return ai_clear_result_frame()
 
     def op_ai_tools(self, args: Mapping[str, Any]) -> dict:
         return ai_tools_frame(self.ai.registry.list())
@@ -414,44 +345,28 @@ class Engine:
     def op_voice_start(self, args: Mapping[str, Any]) -> dict:
         if not self.voice.can_start():
             if self.voice.state != "idle":
-                return voice_error_frame(
-                    OP_VOICE_START,
-                    args.get("id"),
-                    "voice_busy",
-                    "a voice session is already in progress",
+                raise ProtocolError(
+                    "voice_busy", "a voice session is already in progress"
                 )
             if not self.voice.providers.stt_available():
-                return voice_error_frame(
-                    OP_VOICE_START,
-                    args.get("id"),
-                    ERR_VOICE_UNAVAILABLE,
-                    "speech recognition is not available",
+                raise ProtocolError(
+                    ERR_VOICE_UNAVAILABLE, "speech recognition is not available"
                 )
-            return voice_error_frame(
-                OP_VOICE_START,
-                args.get("id"),
+            raise ProtocolError(
                 ERR_VOICE_NOT_ALLOWED,
                 "voice cannot be started in the current state",
             )
         self.voice.start()
         if self.voice.state == "error":
-            return voice_error_frame(
-                OP_VOICE_START,
-                args.get("id"),
+            raise ProtocolError(
                 ERR_VOICE_UNAVAILABLE,
                 self.voice.error or "speech recognition is not available",
             )
-        return voice_result_frame(
-            OP_VOICE_START,
-            args.get("id"),
-            {"state": self.voice.state},
-        )
+        return {"state": self.voice.state}
 
     def op_voice_stop(self, args: Mapping[str, Any]) -> dict:
         if self.voice.state != "recording":
-            return voice_error_frame(
-                OP_VOICE_STOP,
-                args.get("id"),
+            raise ProtocolError(
                 ERR_VOICE_NOT_ALLOWED,
                 f"cannot stop voice in state {self.voice.state}",
             )
@@ -459,27 +374,16 @@ class Engine:
             self.voice.stop()
         except Exception:  # noqa: BLE001 - keep voice failures bounded
             logger.exception("voice stop failed")
-            return voice_error_frame(
-                OP_VOICE_STOP,
-                args.get("id"),
-                ERR_VOICE_INTERNAL,
-                "voice stop failed",
-            )
-        return voice_result_frame(
-            OP_VOICE_STOP,
-            args.get("id"),
-            normalize_voice_result({
-                "state": self.voice.state,
-                "transcript": self.voice.transcript,
-                "error": self.voice.error,
-            }),
-        )
+            raise ProtocolError(ERR_VOICE_INTERNAL, "voice stop failed") from None
+        return normalize_voice_result({
+            "state": self.voice.state,
+            "transcript": self.voice.transcript,
+            "error": self.voice.error,
+        })
 
     def op_voice_cancel(self, args: Mapping[str, Any]) -> dict:
         if not self.voice.active:
-            return voice_error_frame(
-                OP_VOICE_CANCEL,
-                args.get("id"),
+            raise ProtocolError(
                 ERR_VOICE_NOT_ALLOWED,
                 "no active voice session to cancel",
             )
@@ -487,23 +391,12 @@ class Engine:
             self.voice.cancel()
         except Exception:  # noqa: BLE001 - keep voice failures bounded
             logger.exception("voice cancel failed")
-            return voice_error_frame(
-                OP_VOICE_CANCEL,
-                args.get("id"),
-                ERR_VOICE_INTERNAL,
-                "voice cancel failed",
-            )
-        return voice_result_frame(
-            OP_VOICE_CANCEL,
-            args.get("id"),
-            {"state": self.voice.state},
-        )
+            raise ProtocolError(ERR_VOICE_INTERNAL, "voice cancel failed") from None
+        return {"state": self.voice.state}
 
     def op_voice_interrupt(self, args: Mapping[str, Any]) -> dict:
         if not self.voice.active:
-            return voice_error_frame(
-                OP_VOICE_INTERRUPT,
-                args.get("id"),
+            raise ProtocolError(
                 ERR_VOICE_NOT_ALLOWED,
                 "no active voice session to interrupt",
             )
@@ -511,17 +404,8 @@ class Engine:
             self.voice.interrupt()
         except Exception:  # noqa: BLE001 - keep voice failures bounded
             logger.exception("voice interrupt failed")
-            return voice_error_frame(
-                OP_VOICE_INTERRUPT,
-                args.get("id"),
-                ERR_VOICE_INTERNAL,
-                "voice interrupt failed",
-            )
-        return voice_result_frame(
-            OP_VOICE_INTERRUPT,
-            args.get("id"),
-            {"state": self.voice.state},
-        )
+            raise ProtocolError(ERR_VOICE_INTERNAL, "voice interrupt failed") from None
+        return {"state": self.voice.state}
 
     def op_voice_reset(self, args: Mapping[str, Any]) -> dict:
         """Best-effort helper to return a finished session to idle.
@@ -530,11 +414,7 @@ class Engine:
         can surface "idle" after a terminal state. Safe to call repeatedly.
         """
         self.voice.reset()
-        return voice_result_frame(
-            "voice_reset",
-            args.get("id"),
-            {"state": self.voice.state},
-        )
+        return {"state": self.voice.state}
 
     # -- protocol loop ------------------------------------------------------
 

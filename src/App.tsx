@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { EngineState, EngineStatus } from "./types";
+import type { AIStatus, EngineState, EngineStatus, VoiceState, VoiceStatus } from "./types";
 import { fetchAutoStart, setAutoStart } from "./autostart";
 import {
   APPEARANCE_OPTIONS,
@@ -10,6 +10,21 @@ import {
   watchSystemTheme,
   type Appearance,
 } from "./theme";
+import {
+  cancelVoice,
+  fetchVoiceStatus,
+  interruptVoice,
+  resetVoice,
+  startVoice,
+  stopVoice,
+} from "./voice";
+import {
+  cancelStream,
+  clearConversation,
+  drainStream,
+  fetchAIStatus,
+  startStream,
+} from "./chat";
 
 const STARTING_POLL_MS = 1500;
 const STARTING_POLL_MAX = 20; // ~30 s, mirrors the host's 10 s startup bound
@@ -40,10 +55,37 @@ function ChevronIcon({ up }: { up: boolean }) {
   );
 }
 
+function MicIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="2" />
+      <line x1="8" y1="23" x2="16" y2="23" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M18 6 6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
 function PinIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z" />
+      <path d="M16 9V4h1c.55 0 1-.45 1-1s-.45 1-1 1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z" />
     </svg>
   );
 }
@@ -61,13 +103,13 @@ function safeError(err: unknown): string {
 }
 
 /**
- * Dude's companion UI (Sprint 1).
+ * Dude's companion UI (Sprint 1 + Sprint 2).
  *
  * Compact: a small floating pill showing the assistant mark, the name Dude,
  * and a truthful engine-status line. Expanded: a modest panel with the
- * Phase 0 engine status card and desktop-presence controls (always-on-top).
- * All window operations go through Rust commands; all engine access goes
- * through the host's commands — the UI never launches processes or talks to
+ * Phase 0 engine status card, desktop-presence controls, and Sprint 2 voice
+ * controls. All window and engine operations go through Rust commands; the
+ * UI never launches processes, opens the microphone directly, or talks to
  * the engine directly. The panel body is a native drag region; buttons
  * stay clickable and keyboard reachable.
  */
@@ -85,6 +127,15 @@ export default function App() {
   );
   const [autoStart, setAutoStartState] = useState(false);
   const [autoStartBusy, setAutoStartBusy] = useState(false);
+
+  // Voice state ----------------------------------
+  const [voice, setVoice] = useState<VoiceStatus>({
+    state: "idle",
+    transcript: "",
+    error: "",
+  });
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const fetchVoiceRef = useRef(fetchVoiceStatus);
 
   // Read the host's cached status snapshot (never blocks on IPC; the host's
   // health monitor refreshes it every 5 s).
@@ -209,21 +260,266 @@ export default function App() {
 
   const tone = TONE[status.state];
 
+  const isVoiceActiveState = (state: VoiceState): boolean => {
+    return state === "recording" || state === "processing" || state === "speaking";
+  };
+
+  const voiceLabel: Record<VoiceState, string> = {
+    idle: "Voice idle",
+    recording: "Listening…",
+    processing: "Transcribing…",
+    speaking: "Speaking…",
+    done: "Done",
+    cancelled: "Cancelled",
+    error: "Voice error",
+  };
+  const voiceTone: Record<
+    VoiceState,
+    "ok" | "busy" | "bad" | "neutral"
+  > = {
+    idle: "neutral",
+    recording: "busy",
+    processing: "busy",
+    speaking: "busy",
+    done: "ok",
+    cancelled: "neutral",
+    error: "bad",
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const next = await fetchVoiceRef.current();
+        if (!cancelled && next) {
+          setVoice(next);
+          if (next.state === "idle") {
+            void resetVoice();
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setVoice((v) => ({ ...v, error: "Voice status unavailable" }));
+        }
+      }
+    };
+    interval = setInterval(tick, 600);
+    tick();
+    return () => {
+      cancelled = true;
+      if (interval) clearInterval(interval);
+    };
+  }, []);
+
+  const setVoiceError = useCallback((message: string | null) => {
+    setOpError(message);
+  }, []);
+
+  const doStart = useCallback(async () => {
+    setVoiceBusy(true);
+    setVoiceError(null);
+    try {
+      await startVoice();
+    } catch (err) {
+      setVoiceError(`Could not start listening: ${safeError(err)}`);
+    } finally {
+      setVoiceBusy(false);
+    }
+  }, []);
+
+  const doStop = useCallback(async () => {
+    setVoiceBusy(true);
+    setVoiceError(null);
+    try {
+      await stopVoice();
+    } catch (err) {
+      setVoiceError(`Could not stop listening: ${safeError(err)}`);
+    } finally {
+      setVoiceBusy(false);
+    }
+  }, []);
+
+  const doCancel = useCallback(async () => {
+    setVoiceBusy(true);
+    setVoiceError(null);
+    try {
+      await cancelVoice();
+    } catch (err) {
+      setVoiceError(`Could not cancel voice: ${safeError(err)}`);
+    } finally {
+      setVoiceBusy(false);
+    }
+  }, []);
+
+  const doInterrupt = useCallback(async () => {
+    setVoiceBusy(true);
+    setVoiceError(null);
+    try {
+      await interruptVoice();
+    } catch (err) {
+      setVoiceError(`Could not interrupt speech: ${safeError(err)}`);
+    } finally {
+      setVoiceBusy(false);
+    }
+  }, []);
+
+  // Chat state (Sprint 3) ------------------------------------
+  interface ChatMessage {
+    role: "user" | "assistant";
+    text: string;
+    /** Assistant messages still receiving chunks re-render as they fill. */
+    streaming?: boolean;
+  }
+  const [chat, setChat] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [aiProvider, setAIProvider] = useState<AIStatus | null>(null);
+  // Tracks the open engine stream so the Stop button can cancel it.
+  const activeStreamRef = useRef<string | null>(null);
+  const chatLogRef = useRef<HTMLDivElement | null>(null);
+
+  // Poll provider status occasionally (cheap command, mirrors engine polls).
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      const next = await fetchAIStatus();
+      if (!cancelled && next) setAIProvider(next);
+    };
+    void tick();
+    const interval = setInterval(tick, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Keep the newest message visible while streaming.
+  useEffect(() => {
+    chatLogRef.current?.scrollTo({ top: chatLogRef.current.scrollHeight });
+  }, [chat]);
+
+  const doClearChat = useCallback(async () => {
+    setChatError(null);
+    try {
+      await clearConversation();
+      setChat([]);
+    } catch (err) {
+      setChatError(`Could not clear conversation: ${safeError(err)}`);
+    }
+  }, []);
+
+  const doStopStream = useCallback(async () => {
+    const id = activeStreamRef.current;
+    if (!id) return;
+    try {
+      await cancelStream(id);
+    } catch {
+      // Engine may have finished meanwhile; harmless.
+    } finally {
+      activeStreamRef.current = null;
+    }
+  }, []);
+
+  const doSend = useCallback(async () => {
+    const text = chatInput.trim();
+    if (!text || chatBusy) return;
+    if (status.state !== "connected") {
+      setChatError("The Dude engine is not connected yet. Try again when it is.");
+      return;
+    }
+    setChatError(null);
+    setChat((prev) => [...prev, { role: "user", text }]);
+    setChatInput("");
+    setChatBusy(true);
+    const streamId = await startStream(text).catch((err) => {
+      setChatError(`Could not start a response: ${safeError(err)}`);
+      return null;
+    });
+    if (streamId === null) {
+      setChatBusy(false);
+      return;
+    }
+    activeStreamRef.current = streamId;
+    const assistantIndex = chat.length + 1; // index of the assistant turn
+    setChat((prev) => [...prev, { role: "assistant", text: "", streaming: true }]);
+    try {
+      const final = await drainStream(streamId, (index, chunk) => {
+        void index;
+        setChat((prev) => {
+          const copy = [...prev];
+          const msg = copy[assistantIndex];
+          if (msg && msg.role === "assistant") {
+            copy[assistantIndex] = { ...msg, text: msg.text + chunk };
+          }
+          return copy;
+        });
+      });
+      setChat((prev) => {
+        const copy = [...prev];
+        const msg = copy[assistantIndex];
+        if (msg && msg.role === "assistant") {
+          copy[assistantIndex] = {
+            role: "assistant",
+            text: final || msg.text,
+            streaming: false,
+          };
+        }
+        return copy;
+      });
+    } catch (err) {
+      setChatError(`Streaming failed: ${safeError(err)}`);
+      setChat((prev) => {
+        const copy = [...prev];
+        const msg = copy[assistantIndex];
+        if (msg && msg.role === "assistant" && !msg.text) {
+          copy.splice(assistantIndex, 1); // drop the empty placeholder
+        } else if (msg) {
+          copy[assistantIndex] = { ...msg, streaming: false };
+        }
+        return copy;
+      });
+    } finally {
+      activeStreamRef.current = null;
+      setChatBusy(false);
+    }
+  }, [chat, chatBusy, chatInput, status.state]);
+
+  const providerLabel = aiProvider
+    ? aiProvider.provider === "deterministic"
+      ? "Local fallback (not AI)"
+      : aiProvider.provider === "offline"
+        ? "Engine offline"
+        : aiProvider.provider
+    : null;
+
   return (
     <main
       className={[
         "companion",
         expanded ? "is-expanded" : "",
         topmost ? "is-topmost" : "",
+        voice.state === "recording" ? "is-recording" : "",
       ]
         .filter(Boolean)
         .join(" ")}
       aria-label="Dude desktop companion"
     >
-      <div className="panel" id="companion-panel" data-tauri-drag-region="deep">
+      <div
+        className="panel"
+        id="companion-panel"
+        data-tauri-drag-region="deep"
+      >
         <div className="panel-head">
           <span className="mark" aria-hidden="true">
-            <svg viewBox="0 0 32 32" focusable="false" aria-hidden="true">
+            <svg
+              viewBox="0 0 32 32"
+              focusable="false"
+              aria-hidden="true"
+            >
               <defs>
                 <linearGradient id="dudeMark" x1="0" y1="0" x2="1" y2="1">
                   <stop offset="0%" stopColor="#3b82f6" />
@@ -231,6 +527,18 @@ export default function App() {
                 </linearGradient>
               </defs>
               <circle cx="16" cy="16" r="15" fill="url(#dudeMark)" />
+              {voice.state === "recording" && (
+                <circle
+                  cx="16"
+                  cy="16"
+                  r="18.4"
+                  fill="none"
+                  stroke="var(--accent)"
+                  strokeWidth="1.6"
+                  strokeDasharray="3 4"
+                  aria-hidden="true"
+                />
+              )}
               <circle
                 cx="16"
                 cy="16"
@@ -255,11 +563,29 @@ export default function App() {
           <span className="identity">
             <span className="name">Dude</span>
             {opError && !expanded ? (
-              // A failed expand leaves us in the compact state, so the
-              // error takes the status line's slot — it must stay visible.
-              <span className="status tone-bad" role="alert" title={opError}>
+              <span
+                className="status tone-bad"
+                role="alert"
+                title={opError}
+              >
                 <span className="dot" aria-hidden="true" />
                 <span className="status-text">{opError}</span>
+              </span>
+            ) : voice.state !== "idle" &&
+              voice.state !== "done" &&
+              voice.state !== "cancelled" ? (
+              <span
+                className={`status tone-${voiceTone[voice.state]}`}
+                role="status"
+                aria-label={`Voice ${voice.state}. ${
+                  voice.error || voiceLabel[voice.state]
+                }`}
+                title={voice.error || voiceLabel[voice.state]}
+              >
+                <span className="dot" aria-hidden="true" />
+                <span className="status-text">
+                  {voiceLabel[voice.state]}
+                </span>
               </span>
             ) : (
               <span
@@ -319,7 +645,9 @@ export default function App() {
             >
               <PinIcon />
               <span className="toggle-label">Always on top</span>
-              <span className="toggle-state">{topmost ? "On" : "Off"}</span>
+              <span className="toggle-state">
+                {topmost ? "On" : "Off"}
+              </span>
             </button>
 
             <section className="section" aria-label="Appearance">
@@ -360,13 +688,187 @@ export default function App() {
                 <PowerIcon />
                 <span className="toggle-label">Start with Windows</span>
                 <span className="toggle-state">
-                  {autoStartBusy ? "…" : autoStart ? "On" : "Off"}
+                  {autoStartBusy
+                    ? "…"
+                    : autoStart
+                      ? "On"
+                      : "Off"}
                 </span>
               </button>
               <p className="hint">
                 Off by default. On sign-in, Windows launches Dude
                 automatically — turn this off to remove it.
               </p>
+            </section>              <section className="section" aria-label="Voice">
+              <p className="section-label">Voice input & output</p>
+              {voice.state === "idle" ? (
+                <button
+                  type="button"
+                  className={`btn voice-btn ${
+                    voiceBusy ? "btn-busy" : ""
+                  }`}
+                  onClick={() => void doStart()}
+                  disabled={
+                    voiceBusy || status.state !== "connected"
+                  }
+                >
+                  <MicIcon />
+                  Start listening
+                </button>
+              ) : voice.state === "error" ? (
+                <button
+                  type="button"
+                  className={`btn voice-btn ${
+                    voiceBusy ? "btn-busy" : ""
+                  }`}
+                  onClick={() => void doStart()}
+                  disabled={voiceBusy || status.state !== "connected"}
+                >
+                  <MicIcon />
+                  Retry listening
+                </button>
+              ) : (
+                <div className="voice-active">
+                  <button
+                    type="button"
+                    className="voice-stop"
+                    onClick={() => void doStop()}
+                    disabled={voiceBusy || voice.state !== "recording"}
+                    title="Finish recording and transcribe"
+                  >
+                    <StopIcon />
+                    {voice.state === "recording"
+                      ? "Stop recording"
+                      : "Stop"}
+                  </button>
+                  <button
+                    type="button"
+                    className="voice-cancel"
+                    onClick={() => void doCancel()}
+                    disabled={voiceBusy || !isVoiceActiveState(voice.state)}
+                    title="Cancel this interaction without a transcript"
+                  >
+                    <XIcon />
+                    Cancel
+                  </button>
+                  {voice.state === "speaking" && (
+                    <button
+                      type="button"
+                      className="voice-interrupt"
+                      onClick={() => void doInterrupt()}
+                      disabled={voiceBusy}
+                      title="Stop speaking immediately"
+                    >
+                      Interrupt
+                    </button>
+                  )}
+                </div>
+              )}
+            </section>
+
+            {voice.transcript && voice.state === "done" && (
+              <p
+                className="voice-transcript"
+                aria-live="polite"
+                aria-label="Transcript"
+              >
+                <span className="voice-transcript-label">You said:</span>
+                {voice.transcript}
+              </p>
+            )}
+
+            {voice.state === "error" && (
+              <p className="op-error" role="alert">
+                {voice.error || "Voice error"}
+              </p>
+            )}
+
+            <section className="section chat-section" aria-label="Chat">
+              <div className="chat-head">
+                <p className="section-label">Chat</p>
+                <div className="chat-head-right">
+                  {providerLabel && (
+                    <span className="chat-provider" title="The active response source. The deterministic fallback is not an AI model.">
+                      {providerLabel}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="chat-clear"
+                    onClick={() => void doClearChat()}
+                    disabled={chatBusy || chat.length === 0}
+                    title="Clear the in-memory conversation. Nothing is persisted."
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+              {chat.length > 0 && (
+                <div
+                  className="chat-log"
+                  ref={chatLogRef}
+                  aria-live="polite"
+                  aria-label="Conversation"
+                >
+                  {chat.map((msg, i) => (
+                    <div
+                      key={i}
+                      className={`chat-msg ${msg.role}`}
+                    >
+                      <span className="chat-role">
+                        {msg.role === "user" ? "You" : "Dude"}
+                      </span>
+                      <span className="chat-text">
+                        {msg.text || (msg.streaming ? "…" : "")}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {chatError && (
+                <p className="op-error" role="alert">
+                  {chatError}
+                </p>
+              )}
+              <div className="chat-input-row">
+                <input
+                  type="text"
+                  className="chat-input"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      void doSend();
+                    }
+                  }}
+                  placeholder={
+                    chatBusy ? "Dude is responding…" : "Type a message…"
+                  }
+                  aria-label="Message text"
+                  disabled={chatBusy || status.state !== "connected"}
+                />
+                {chatBusy ? (
+                  <button
+                    type="button"
+                    className="chat-send chat-stop"
+                    onClick={() => void doStopStream()}
+                    title="Cancel the response in progress"
+                  >
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="chat-send"
+                    onClick={() => void doSend()}
+                    disabled={!chatInput.trim() || status.state !== "connected"}
+                    title="Send the message to the engine"
+                  >
+                    Send
+                  </button>
+                )}
+              </div>
             </section>
 
             {opError && (

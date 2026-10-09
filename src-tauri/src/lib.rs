@@ -11,7 +11,7 @@
 pub mod engine;
 pub mod window;
 
-use engine::{EngineState, Status};
+use engine::{AIStatus, AISubmitResult, AIStreamFrame, EngineState, Status, VoiceStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -35,6 +35,83 @@ fn engine_status(state: tauri::State<EngineState>) -> Status {
 #[tauri::command]
 fn engine_health(state: tauri::State<EngineState>) -> Status {
     state.health_check()
+}
+
+/// Poll the engine's current voice session status.
+/// The UI owns the interaction buttons; this command only reads state.
+#[tauri::command]
+fn voice_status(state: tauri::State<EngineState>) -> VoiceStatus {
+    state.voice_status()
+}
+
+/// Start an explicit voice capture session. Only succeeds from an idle state.
+#[tauri::command]
+fn voice_start(state: tauri::State<EngineState>) -> Result<VoiceStatus, String> {
+    state.voice_start()
+}
+
+/// Finish the current recording and transcribe it.
+#[tauri::command]
+fn voice_stop(state: tauri::State<EngineState>) -> Result<VoiceStatus, String> {
+    state.voice_stop()
+}
+
+/// Cancel the current voice interaction without a transcript.
+#[tauri::command]
+fn voice_cancel(state: tauri::State<EngineState>) -> Result<VoiceStatus, String> {
+    state.voice_cancel()
+}
+
+/// Interrupt any active speech playback immediately.
+#[tauri::command]
+fn voice_interrupt(state: tauri::State<EngineState>) -> Result<VoiceStatus, String> {
+    state.voice_interrupt()
+}
+
+/// Best-effort helper to return a finished voice session to idle.
+/// Used by the host's periodic voice status polling path.
+#[tauri::command]
+fn voice_reset(state: tauri::State<EngineState>) -> Result<VoiceStatus, String> {
+    state.voice_reset()
+}
+
+// -- AI chat commands (Sprint 3) -------------------------------------------
+
+/// Provider/tool status. Reads a live snapshot; safe to poll.
+#[tauri::command]
+fn ai_status(state: tauri::State<EngineState>) -> AIStatus {
+    state.ai_status()
+}
+
+/// Submit a message synchronously and receive the full response.
+#[tauri::command]
+fn ai_submit(state: tauri::State<EngineState>, text: String) -> Result<AISubmitResult, String> {
+    state.ai_submit(&text)
+}
+
+/// Start a streaming response and return the stream handle.
+#[tauri::command]
+fn ai_stream_start(state: tauri::State<EngineState>, text: String) -> Result<String, String> {
+    state.ai_stream_start(&text)
+}
+
+/// Pull the next chunk or terminal frame for an open stream.
+#[tauri::command]
+fn ai_stream_next(state: tauri::State<EngineState>, stream_id: String) -> Result<AIStreamFrame, String> {
+    state.ai_stream_next(&stream_id)
+}
+
+/// Cancel an in-flight stream. Safe to call even after it finished (errors
+/// are surfaced, never panicked).
+#[tauri::command]
+fn ai_stream_cancel(state: tauri::State<EngineState>, stream_id: String) -> Result<(), String> {
+    state.ai_stream_cancel(&stream_id)
+}
+
+/// Clear the in-memory conversation.
+#[tauri::command]
+fn ai_clear(state: tauri::State<EngineState>) -> Result<(), String> {
+    state.ai_clear()
 }
 
 pub fn run() {
@@ -137,6 +214,18 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             engine_status,
             engine_health,
+            voice_status,
+            voice_start,
+            voice_stop,
+            voice_cancel,
+            voice_interrupt,
+            voice_reset,
+            ai_status,
+            ai_submit,
+            ai_stream_start,
+            ai_stream_next,
+            ai_stream_cancel,
+            ai_clear,
             window::set_companion_expanded,
             window::set_companion_topmost
         ])
