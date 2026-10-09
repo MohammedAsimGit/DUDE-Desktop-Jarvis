@@ -1,3 +1,28 @@
-# Dude engine runtime dependencies (Phase 0).
-# Phase 0 is intentionally stdlib-only: no runtime packages required.
-# This file pins the contract; add future runtime deps here.
+# Dude engine runtime dependencies (Phase 0 + Sprint 2 voice).
+#
+# Phase 0 is intentionally stdlib-only. Sprint 2 adds optional, local-first
+# voice dependencies. They are NOT required to run the engine; if they are
+# missing, voice operations return an honest "unavailable" outcome.
+#
+# Local speech-to-text (default, optional):
+#   pip install SpeechRecognition
+#   - used as a thin wrapper around a local VOSK model on Windows
+#
+#   A VOSK model is also required for offline recognition. Models are not
+#   shipped or auto-downloaded by Dude. A small model is typically around
+#   50 MB on disk and needs roughly a few hundred MB of runtime memory;
+#   the exact size depends on the model file you choose from the provider's
+#   model list. Place an extracted model where your voice setup can find it,
+#   then point the recognizer at it through the project's voice setup.
+#
+# Local text-to-speech (default, optional):
+#   pip install pyttsx3
+#   - uses the Windows SAPI5 engine already present on the system; no model
+#     download is required for the default TTS path
+#
+# If voice is not needed, keep this file as-is and leave voice features
+# reporting "unavailable" until the dependencies and model are installed.
+#
+# Do not add API keys, tokens, or cloud provider packages here by default.
+SpeechRecognition
+pyttsx3
