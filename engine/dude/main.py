@@ -50,6 +50,7 @@ from .voice_protocol import (
     voice_status_frame,
 )
 from .ai import AIOrchestrator, AINotConfigured, DeterministicAIProvider, ToolRegistry, ToolSchema
+from .provider_openai import resolve_provider_from_env
 from .ai_protocol import (
     ERR_AI_BAD_REQUEST,
     ERR_AI_BUSY,
@@ -125,11 +126,16 @@ class Engine:
         self._stop_requested = False
         self.voice = VoiceSession(VoiceProviders())
 
-        # AI is optional: if a real provider is configured later, it is swapped
-        # in through the provider interface. Until then, use the deterministic
-        # no-AI fallback so the engine can still accept submissions safely.
+        # AI is optional: a real provider is used only when the user has
+        # explicitly configured and enabled one (see provider_openai.py).
+        # Until then the deterministic non-AI fallback answers locally, so the
+        # engine can still accept submissions safely.
+        provider_name, provider = resolve_provider_from_env()
+        if provider is None:
+            provider = DeterministicAIProvider()
+        self._provider_name = provider_name if provider is not None else "deterministic"
         self.ai = AIOrchestrator(
-            provider=DeterministicAIProvider(),
+            provider=provider,
             registry=_DEFAULT_TOOL_REGISTRY,
         )
 
@@ -140,6 +146,8 @@ class Engine:
     # -- AI operations ---------------------------------------------------------
 
     def op_ai_status(self, args: Mapping[str, Any]) -> dict:
+        # Report the resolved provider name. The deterministic fallback always
+        # shows as "deterministic" so the UI can label it truthfully as non-AI.
         return ai_status_frame(
             configured=self.ai.provider_configured,
             provider=self.ai.provider_name,
