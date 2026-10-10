@@ -70,6 +70,82 @@ class TestVoiceProvidersTTSBootstrapFailure:
         assert exc_info.value.args[0]
 
 
+class TestSTTCaptureWithoutMicrophoneProbe:
+    def test_capture_still_honest_when_start_capture_fails(self, monkeypatch):
+        """Regression: start_capture must never mask the real failure.
+
+        A previous revision bound ``sr`` only inside __init__, so the first
+        capture attempt raised a NameError that was reported to the user as
+        "no microphone is available" even on machines with a working mic.
+        These checks pin the current behavior without opening any real
+        device: a fake sr module proves that start_capture reaches the
+        Microphone() constructor and that a genuine capture failure surfaces
+        as MicrophoneUnavailable (the honest error), not something else.
+        """
+        import types
+
+        import dude.voice as voice_mod
+
+        calls = {"constructed": 0, "opened": 0}
+
+        class FakeSource:
+            def __enter__(self):
+                calls["opened"] += 1
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        class FakeMicrophone:
+            def __init__(self):
+                calls["constructed"] += 1
+
+            def __enter__(self):
+                return FakeSource()
+
+            def __exit__(self, *exc):
+                return False
+
+        fake_sr = types.ModuleType("speech_recognition")
+        fake_sr.Microphone = FakeMicrophone
+
+        class FakeRecognizer:
+            def adjust_for_ambient_noise(self, source):
+                pass
+
+        fake_sr.Recognizer = FakeRecognizer
+        monkeypatch.setattr(voice_mod, "_sr", fake_sr, raising=False)
+        monkeypatch.setattr(voice_mod, "_sr_checked", True, raising=False)
+
+        stt = voice_mod._VoskSTT()
+        stt.start_capture()
+        assert calls["constructed"] == 1
+
+        # stop_capture opens the session again; a failure there must surface
+        # as MicrophoneUnavailable, never as a NameError or other exception.
+        monkeypatch.setattr(
+            fake_sr,
+            "Microphone",
+            lambda: (_ for _ in ()).throw(OSError("device lost")),
+        )
+        with pytest.raises(voice_mod.MicrophoneUnavailable):
+            stt.stop_capture()
+
+    def test_capture_raises_real_error_when_package_missing(self, monkeypatch):
+        """Without the package, capture must raise STTUnavailable — not
+        MicrophoneUnavailable — so the UI distinguishes 'library missing'
+        from 'no microphone hardware'."""
+        import dude.voice as voice_mod
+
+        monkeypatch.setattr(voice_mod, "_sr", None, raising=False)
+        monkeypatch.setattr(voice_mod, "_sr_checked", True, raising=False)
+
+        stt = voice_mod._VoskSTT()
+        with pytest.raises(voice_mod.STTUnavailable):
+            stt.start_capture()
+
+
+
 class TestVoiceProvidersAvailabilityReflectsState:
     def test_stt_available_when_probed_successfully(self, monkeypatch):
         # If the real dependency is present, availability should be True.

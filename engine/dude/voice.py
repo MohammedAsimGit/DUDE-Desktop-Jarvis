@@ -49,6 +49,35 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Optional voice dependency. Imported through a lazy hook rather than at
+# module import time so the engine stays runnable without the voice stack,
+# while methods that need ``sr`` can resolve it cleanly and report honest
+# "unavailable" errors instead of unrelated NameErrors.
+_sr: Optional[Any] = None
+_sr_checked = False
+
+
+def _get_sr() -> Any:
+    """Return the ``speech_recognition`` module or raise STTUnavailable."""
+    global _sr, _sr_checked
+    if _sr is not None:
+        return _sr
+    if _sr_checked:
+        raise STTUnavailable(
+            "speech recognition is not installed (add the project's voice "
+            "dependencies)."
+        )
+    _sr_checked = True
+    try:
+        import speech_recognition as sr  # bound here, shared below
+    except ImportError as exc:
+        raise STTUnavailable(
+            "speech recognition is not installed (add the project's voice "
+            "dependencies)."
+        ) from exc
+    _sr = sr
+    return _sr
+
 # ---------------------------------------------------------------------------
 # Provider errors
 # ---------------------------------------------------------------------------
@@ -174,7 +203,7 @@ class _VoskSTT(BaseSTT):
 
     def __init__(self) -> None:
         try:
-            import speech_recognition as sr  # noqa: F401
+            import speech_recognition as sr  # noqa: F401 - availability probe
         except ImportError as exc:
             raise STTUnavailable(
                 "speech recognition is not installed (add the project's voice "
@@ -186,6 +215,7 @@ class _VoskSTT(BaseSTT):
         self._audio: Optional[sr.AudioData] = None
 
     def start_capture(self) -> None:
+        sr = _get_sr()
         try:
             self._source = sr.Microphone()
         except Exception as exc:
@@ -199,6 +229,7 @@ class _VoskSTT(BaseSTT):
             logger.warning("microphone ambient adjustment failed: %s", exc)
 
     def stop_capture(self) -> str:
+        sr = _get_sr()
         if self._source is None:
             raise MicrophoneUnavailable("no microphone session is active.")
 
@@ -220,10 +251,7 @@ class _VoskSTT(BaseSTT):
     # -- private -------------------------------------------------------------
 
     def _recognize(self, audio: Any) -> str:
-        try:
-            import speech_recognition as sr
-        except ImportError:
-            raise STTUnavailable("speech_recognition is not installed.")
+        sr = _get_sr()
 
         # Use VOSK offline if the recognizer has a VOSK model configured.
         # Otherwise fall back to a clear "not configured" outcome rather than
