@@ -44,6 +44,7 @@ Audio handling rules enforced by this module:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any, Optional
 
@@ -201,6 +202,12 @@ class _VoskSTT(BaseSTT):
     # Recognition hygiene: keep intermediate context minimal and bounded.
     _MAX_CHARS = 2000  # truncate absurd transcripts before they leave the engine
 
+    # Capture bounds. The engine's stdio loop must never block indefinitely on
+    # a microphone; these limits also define the longest a single phrase can
+    # run and the longest we wait for speech to begin (open-path skip).
+    _PHRASE_TIME_LIMIT_S = 10.0
+    _LISTEN_TIMEOUT_S = 10.0
+
     def __init__(self) -> None:
         try:
             import speech_recognition as sr  # noqa: F401 - availability probe
@@ -210,7 +217,9 @@ class _VoskSTT(BaseSTT):
                 "dependencies)."
             ) from exc
 
-        self._recognizer = sr.Recognizer()
+        self._recognizer: "sr.Recognizer" = sr.Recognizer()
+        self._recognizer.energy_threshold = 300  # keep offline VOSK captures snappy
+        self._recognizer.dynamic_energy_threshold = False
         self._source: Optional[sr.Microphone] = None
         self._audio: Optional[sr.AudioData] = None
 
@@ -224,7 +233,7 @@ class _VoskSTT(BaseSTT):
             ) from exc
         try:
             with self._source:
-                self._recognizer.adjust_for_ambient_noise(self._source)
+                self._recognizer.adjust_for_ambient_noise(self._source, duration=0.3)
         except Exception as exc:
             logger.warning("microphone ambient adjustment failed: %s", exc)
 
@@ -234,8 +243,21 @@ class _VoskSTT(BaseSTT):
             raise MicrophoneUnavailable("no microphone session is active.")
 
         try:
-            with self._source:
-                self._audio = self._recognizer.listen(self._source)
+            # listen() needs the ENTERED AudioSource (a live audio stream),
+            # not the outer Microphone wrapper object.
+            with self._source as entered_source:
+                # Bounded listen: never block the engine's stdio loop
+                # indefinitely. `timeout` bounds waiting for speech to start;
+                # `phrase_time_limit` bounds the phrase once it begins.
+                self._audio = self._recognizer.listen(
+                    entered_source,
+                    timeout=self._LISTEN_TIMEOUT_S,
+                    phrase_time_limit=self._PHRASE_TIME_LIMIT_S,
+                )
+        except sr.WaitTimeoutError:
+            # No speech within the window: an honest empty result, not an error.
+            self._audio = None
+            return ""
         except Exception as exc:
             logger.warning("microphone capture failed: %s", exc)
             raise MicrophoneUnavailable("microphone capture failed.") from exc
@@ -357,6 +379,13 @@ class VoiceSession:
         self._tts: Optional[BaseTTS] = None
         self._used_stt = False
         self._used_tts = False
+        # Worker plumbing: states are touched both from the stdio loop (ops)
+        # and from the background voice worker, so all cross-thread accesses
+        # go through ``_lock``; ``_cancel_requested`` marks a cancelled
+        # session so a late worker merge cannot resurrect stale state.
+        self._lock = threading.Lock()
+        self._cancel_requested = False
+        self._worker: Optional[threading.Thread] = None
 
     # -- convenience queries -------------------------------------------------
 
@@ -383,46 +412,79 @@ class VoiceSession:
             self.error = "speech recognition is not available"
             return
 
-        self.state = _VOICE_RECORDING
-        self.transcript = None
-        self.error = None
+        with self._lock:
+            self._cancel_requested = False
+            self.state = _VOICE_RECORDING
+            self.transcript = None
+            self.error = None
         try:
             self._stt = self.providers.stt()
             self._stt.start_capture()
             self._used_stt = True
         except VoiceError as exc:
-            self.state = _VOICE_ERROR
-            self.error = str(exc)
+            with self._lock:
+                self.state = _VOICE_ERROR
+                self.error = str(exc)
 
     def stop(self) -> None:
-        """Finish recording and transcribe what was captured."""
+        """Finish recording and transcribe what was captured.
+
+        The blocking capture + playback work runs on a background thread so
+        the engine's stdio loop stays responsive to any other op the host
+        sends while voice work is in flight (health, ai_status, streaming,
+        status polling etc.). The state machine still transitions through
+        processing -> speaking -> done exactly as before; background merges
+        are guarded by ``_lock``.
+        """
         if self.state != _VOICE_RECORDING:
             return
         self.state = _VOICE_PROCESSING
+        t = threading.Thread(target=self._voice_worker, daemon=True)
+        self._worker = t
+        t.start()
+
+    def _voice_worker(self) -> None:
+        """Background: transcribe the captured phrase, then speak it."""
         try:
             text = self._stt.stop_capture()
         except VoiceError as exc:
-            self.state = _VOICE_ERROR
-            self.error = str(exc)
+            with self._lock:
+                self.state = _VOICE_ERROR
+                self.error = str(exc)
+            return
+        except Exception as exc:
+            with self._lock:
+                self.state = _VOICE_ERROR
+                self.error = "voice capture failed"
+            logger.warning("voice worker capture failed: %s", exc)
             return
 
-        self.transcript = text
-        if not text:
-            self.state = _VOICE_DONE
-            self.transcript = ""
+        with self._lock:
+            if self._cancel_requested:
+                return
+            self.transcript = text
+            is_speaking = bool(text)
+            if not text:
+                self.state = _VOICE_DONE
+                self.transcript = ""
+        if not is_speaking:
             return
 
-        self.state = _VOICE_SPEAKING
+        with self._lock:
+            self.state = _VOICE_SPEAKING
         self._speak_acknowledgment(text)
 
     def cancel(self) -> None:
         """Abort the current interaction without producing a transcript."""
-        if self.state == _VOICE_IDLE:
-            return
+        with self._lock:
+            if self.state == _VOICE_IDLE:
+                return
+            self._cancel_requested = True
         self._cancel_in_flight()
-        self.state = _VOICE_CANCELLED
-        self.transcript = None
-        self.error = None
+        with self._lock:
+            self.state = _VOICE_CANCELLED
+            self.transcript = None
+            self.error = None
 
     def interrupt(self) -> None:
         """Stop any active audio playback immediately."""
@@ -431,23 +493,26 @@ class VoiceSession:
                 self._tts.interrupt()
             except Exception as exc:
                 logger.warning("voice interrupt failed: %s", exc)
-        self.state = _VOICE_DONE
-        self._used_tts = False
+        with self._lock:
+            self.state = _VOICE_DONE
+            self._used_tts = False
 
     # -- internal ------------------------------------------------------------
 
     def _speak_acknowledgment(self, transcript: str) -> None:
         if not self.providers.tts_available():
-            self.state = _VOICE_DONE
-            self.error = "text-to-speech is not available"
+            with self._lock:
+                self.state = _VOICE_DONE
+                self.error = "text-to-speech is not available"
             return
 
         try:
             self._tts = self.providers.tts()
             self._used_tts = True
         except VoiceError as exc:
-            self.state = _VOICE_DONE
-            self.error = str(exc)
+            with self._lock:
+                self.state = _VOICE_DONE
+                self.error = str(exc)
             return
 
         phrase = f"I heard you say {transcript}."
@@ -455,11 +520,15 @@ class VoiceSession:
             self._tts.speak(phrase)
         except Exception as exc:
             logger.warning("TTS speak failed: %s", exc)
-            self.state = _VOICE_DONE
-            self.error = "speech playback failed"
+            with self._lock:
+                self.state = _VOICE_DONE
+                self.error = "speech playback failed"
             return
 
-        self.state = _VOICE_DONE
+        with self._lock:
+            if self._cancel_requested:
+                return
+            self.state = _VOICE_DONE
 
     def _reset_after_done(self) -> None:
         """Best-effort cleanup once a session reaches a terminal state.
@@ -470,6 +539,8 @@ class VoiceSession:
         if self.state in (_VOICE_DONE, _VOICE_CANCELLED, _VOICE_ERROR):
             self._stt = None
             self._tts = None
+            self._worker = None
+            self._cancel_requested = False
 
     # -- public helpers ---------------------------------------------------------
 
@@ -480,12 +551,16 @@ class VoiceSession:
         polling: it lets the UI surface return to idle after a terminal
         state once the interaction is clearly finished.
         """
-        if self.state in (_VOICE_DONE, _VOICE_CANCELLED, _VOICE_ERROR):
+        with self._lock:
+            if self.state not in (_VOICE_DONE, _VOICE_CANCELLED, _VOICE_ERROR):
+                return
             self.state = _VOICE_IDLE
             self.transcript = None
             self.error = None
             self._stt = None
             self._tts = None
+            self._worker = None
+            self._cancel_requested = False
 
     def _cancel_in_flight(self) -> None:
         if self._stt is not None:
