@@ -141,7 +141,17 @@ stdout carries protocol frames only; diagnostics go to stderr.
 - **Log file location** — `%LOCALAPPDATA%\Dude\engine.log` (engine) and the
   `tauri dev` terminal (host + engine stderr).
 
+## Window modes
+
+Dude has three window modes — compact companion (default), expanded panel,
+and the opt-in full-screen desktop layer. Geometry is owned by the Rust host;
+the expanded height follows the display work area, and the panel body scrolls
+when the content is taller. See [WINDOW.md](WINDOW.md) for how to enter and
+leave each mode, and for the click-through limitation of the full-screen
+layer.
+
 ## Project layout
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the process model and protocol
-contract, and [SECURITY.md](SECURITY.md) for the security posture.
+contract, [SECURITY.md](SECURITY.md) for the security posture, and
+[WINDOW.md](WINDOW.md) for the companion/expanded/full-screen window modes.
