@@ -72,7 +72,7 @@ Never commit `.env` or put secrets in it.
 ## Tests
 
 ```bash
-# Engine unit tests (25 cases: protocol, lifecycle, config)
+# Engine unit tests (protocol, lifecycle, config, voice setup)
 .venv\Scripts\python -m pytest engine/
 
 # Rust integration tests (spawns the real engine, speaks protocol v1)
@@ -81,6 +81,33 @@ cd src-tauri && cargo test
 # Frontend type-check + build
 npm run build
 ```
+
+## Voice setup
+
+Voice is optional and local-first. One explicit, user-run script sets it up
+(installs into `.venv` only; nothing downloads when Dude starts):
+
+```powershell
+# from the repository root; creates .venv if missing
+.\scripts\setup-voice.ps1
+```
+
+This installs `SpeechRecognition[audio,vosk]` (PyAudio + VOSK runtime),
+`pyttsx3`, and `tqdm` into `.venv`, then downloads the default English VOSK
+model with the installed package's own helper (`sprc download vosk`) to the
+exact path the recognizer reads:
+`.venv\Lib\site-packages\speech_recognition\models\vosk`.
+
+Confirm it worked, then launch with that same interpreter:
+
+```powershell
+.venv\Scripts\python -c "import speech_recognition, pyaudio, vosk, pyttsx3; print('voice deps ok')"
+$env:DUDE_PYTHON = "$PWD\.venv\Scripts\python.exe"
+npm run tauri dev
+```
+
+See [docs/VOICE.md](VOICE.md) for model choice/language, mic permission,
+the full usage flow, and troubleshooting of each voice error message.
 
 ## Engine smoke test without the app
 
@@ -103,6 +130,10 @@ stdout carries protocol frames only; diagnostics go to stderr.
 - **Engine shows "disconnected"** — run with `DUDE_PYTHON` pointed at the
   venv and check `RUST_LOG=debug` output; engine stderr appears in the
   `tauri dev` console.
+- **Voice says a dependency is missing** — the engine is running under a
+  different interpreter than `.venv`. Set `DUDE_PYTHON` to
+  `$PWD\.venv\Scripts\python.exe` in the same terminal before
+  `npm run tauri dev`. See [VOICE.md](VOICE.md#troubleshooting).
 - **Port 1420 in use** — another `tauri dev` is running; close it. Vite is
   pinned to 1420 (Tauri expects it).
 - **Rust link errors** — install VS 2022 Build Tools with the
