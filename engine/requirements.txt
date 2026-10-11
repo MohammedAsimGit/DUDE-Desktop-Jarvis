@@ -5,24 +5,37 @@
 # missing, voice operations return an honest "unavailable" outcome.
 #
 # Local speech-to-text (default, optional):
-#   pip install SpeechRecognition
+#   SpeechRecognition[audio,vosk]
+#   - [audio] pulls PyAudio, which supplies microphone capture
+#   - [vosk] pulls the VOSK runtime used for offline recognition
 #   - used as a thin wrapper around a local VOSK model on Windows
 #
 #   A VOSK model is also required for offline recognition. Models are not
-#   shipped or auto-downloaded by Dude. A small model is typically around
-#   50 MB on disk and needs roughly a few hundred MB of runtime memory;
-#   the exact size depends on the model file you choose from the provider's
-#   model list. Place an extracted model where your voice setup can find it,
-#   then point the recognizer at it through the project's voice setup.
+#   shipped or auto-downloaded by Dude. Download one explicitly with the
+#   project's voice setup script (scripts/setup-voice.ps1), which uses the
+#   SpeechRecognition helper command `sprc download vosk` and places the
+#   model exactly where the installed recognizer looks for it:
+#     <venv>/Lib/site-packages/speech_recognition/models/vosk
+#   The default model is English (vosk-model-small-en-us-0.15, ~40 MB on
+#   disk, a few hundred MB of runtime memory). Pick another official model
+#   from https://alphacephei.com/vosk/models to support a different spoken
+#   language; see docs/VOICE.md.
 #
 # Local text-to-speech (default, optional):
 #   pip install pyttsx3
 #   - uses the Windows SAPI5 engine already present on the system; no model
 #     download is required for the default TTS path
 #
+# tqdm is only needed so the `sprc download vosk` helper command can show
+# download progress; it is small and harmless if you never use it.
+#
+# Install into the repository virtual environment only:
+#   .venv\Scripts\python -m pip install -r engine\requirements.txt
+#
 # If voice is not needed, keep this file as-is and leave voice features
 # reporting "unavailable" until the dependencies and model are installed.
 #
 # Do not add API keys, tokens, or cloud provider packages here by default.
-SpeechRecognition
+SpeechRecognition[audio,vosk]
 pyttsx3
+tqdm
