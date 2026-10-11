@@ -58,9 +58,14 @@ simulated desktop, and no screenshot background.
   back to the UI, so the indicator cannot lie; a failure restores the previous
   layout instead of leaving half-applied geometry.
 - **Leaving.** Any of: `Esc`, the exit control in the header (the chevron is
-  replaced by it), the labelled **Exit full-screen mode** button at the top of
-  the panel body, or the tray (Hide / Quit still work as usual). Leaving
-  restores the companion layout that was active before.
+  replaced by it), or the labelled **Exit full-screen mode** button at the top
+  of the panel body. Leaving restores the companion layout that was active
+  before.
+- **The tray is unaffected.** Hide and Quit keep working while the layer is
+  up. Hiding does not leave the mode: the window state and the UI agree, so
+  showing Dude again returns to the full-screen layer with its exit controls
+  in place. Selecting **Quit Dude** is the one action that ends the process
+  from here.
 - **Not always-on-top.** Full-screen mode never pins Dude above other windows
   by itself; the separate **Always on top** toggle is the only thing that
   does. Full-screen is off by default and never persisted.
