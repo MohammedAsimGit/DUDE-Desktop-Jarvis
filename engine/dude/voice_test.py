@@ -157,6 +157,11 @@ class TestSTTCaptureWithoutMicrophoneProbe:
         monkeypatch.setattr(voice_mod, "_sr", fake_sr, raising=False)
         monkeypatch.setattr(voice_mod, "_sr_checked", True, raising=False)
 
+        # The readiness check (vosk runtime + model on disk) is exercised
+        # separately below; keep this capture test deterministic regardless
+        # of whether this machine has a model installed.
+        monkeypatch.setattr(voice_mod, "ensure_vosk_ready", lambda: None)
+
         stt = voice_mod._VoskSTT()
         stt.start_capture()
         assert calls["constructed"] == 1
@@ -182,10 +187,92 @@ class TestSTTCaptureWithoutMicrophoneProbe:
 
         monkeypatch.setattr(voice_mod, "_sr", None, raising=False)
         monkeypatch.setattr(voice_mod, "_sr_checked", True, raising=False)
+        monkeypatch.setattr(voice_mod, "ensure_vosk_ready", lambda: None)
 
         stt = voice_mod._VoskSTT()
         with pytest.raises(voice_mod.STTUnavailable):
             stt.start_capture()
+
+
+class TestVoskReadinessMessages:
+    """Setup problems must be distinguishable, deterministic messages."""
+
+    def test_missing_vosk_runtime_names_the_setup_script(self, monkeypatch):
+        import dude.voice as voice_mod
+
+        _block_import(monkeypatch, "vosk")
+        with pytest.raises(voice_mod.STTUnavailable) as exc_info:
+            voice_mod.ensure_vosk_ready()
+        assert "VOSK runtime" in str(exc_info.value)
+        assert "setup-voice.ps1" in str(exc_info.value)
+
+    def test_missing_model_names_path_and_setup_script(
+        self, monkeypatch, tmp_path
+    ):
+        import dude.voice as voice_mod
+
+        missing = tmp_path / "models" / "vosk"  # deliberately never created
+        monkeypatch.setattr(voice_mod, "vosk_model_path", lambda: missing)
+        with pytest.raises(voice_mod.STTUnavailable) as exc_info:
+            voice_mod.ensure_vosk_ready()
+        message = str(exc_info.value)
+        assert "no VOSK model" in message
+        assert "setup-voice.ps1" in message
+
+    def test_incomplete_model_detected(self, monkeypatch, tmp_path):
+        import dude.voice as voice_mod
+
+        empty = tmp_path / "vosk"
+        empty.mkdir()
+        monkeypatch.setattr(voice_mod, "vosk_model_path", lambda: empty)
+        with pytest.raises(voice_mod.STTUnavailable) as exc_info:
+            voice_mod.ensure_vosk_ready()
+        assert "incomplete" in str(exc_info.value)
+
+    def test_ready_model_passes(self, monkeypatch, tmp_path):
+        import dude.voice as voice_mod
+
+        model = tmp_path / "vosk"
+        (model / "am").mkdir(parents=True)
+        monkeypatch.setattr(voice_mod, "vosk_model_path", lambda: model)
+        voice_mod.ensure_vosk_ready()  # must not raise
+
+    def test_missing_pyaudio_reported_as_dependency(self, monkeypatch):
+        """A missing PyAudio is a setup problem, not 'no microphone'."""
+        import types
+
+        import dude.voice as voice_mod
+        import speech_recognition as real_sr
+
+        class ExplodingMicrophone:
+            def __init__(self):
+                raise AttributeError("Could not find PyAudio; check installation")
+
+        fake_sr = types.ModuleType("speech_recognition")
+        fake_sr.Microphone = ExplodingMicrophone
+        fake_sr.Recognizer = real_sr.Recognizer
+
+        monkeypatch.setattr(voice_mod, "_sr", fake_sr, raising=False)
+        monkeypatch.setattr(voice_mod, "_sr_checked", True, raising=False)
+        monkeypatch.setattr(voice_mod, "ensure_vosk_ready", lambda: None)
+        _block_import(monkeypatch, "pyaudio")
+
+        stt = voice_mod._VoskSTT()
+        with pytest.raises(voice_mod.STTUnavailable) as exc_info:
+            stt.start_capture()
+        assert "PyAudio" in str(exc_info.value)
+
+    def test_stt_error_surfaces_detailed_reason(self, monkeypatch):
+        """Providers keep the specific cause for ops to report."""
+        import dude.voice as voice_mod
+
+        _block_import(monkeypatch, "speech_recognition")
+        providers = voice_mod.VoiceProviders()
+        with redirect_stderr(io.StringIO()):
+            with pytest.raises(voice_mod.STTUnavailable):
+                providers.stt()
+        assert providers.stt_error()
+        assert providers.stt_available() is False
 
 
 

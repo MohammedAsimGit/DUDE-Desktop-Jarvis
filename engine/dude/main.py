@@ -36,7 +36,13 @@ from .protocol import (
     success_frame,
     validate_request,
 )
-from .voice import VoiceProviders, VoiceSession
+from .voice import (
+    _VOICE_CANCELLED,
+    _VOICE_DONE,
+    _VOICE_ERROR,
+    VoiceProviders,
+    VoiceSession,
+)
 from .voice_protocol import (
     ERR_VOICE_INTERNAL,
     ERR_VOICE_NOT_ALLOWED,
@@ -351,6 +357,16 @@ class Engine:
         )
 
     def op_voice_start(self, args: Mapping[str, Any]) -> dict:
+        # A finished, cancelled, or failed session is terminal: clear it so
+        # "Start listening" / "Retry listening" can begin a fresh one without
+        # the user needing a separate reset round-trip. In-progress states
+        # (recording/processing/speaking) are still rejected as busy.
+        if self.voice.state in (
+            _VOICE_DONE,
+            _VOICE_CANCELLED,
+            _VOICE_ERROR,
+        ):
+            self.voice.reset()
         if not self.voice.can_start():
             if self.voice.state != "idle":
                 raise ProtocolError(
@@ -358,7 +374,9 @@ class Engine:
                 )
             if not self.voice.providers.stt_available():
                 raise ProtocolError(
-                    ERR_VOICE_UNAVAILABLE, "speech recognition is not available"
+                    ERR_VOICE_UNAVAILABLE,
+                    self.voice.providers.stt_error()
+                    or "speech recognition is not available",
                 )
             raise ProtocolError(
                 ERR_VOICE_NOT_ALLOWED,

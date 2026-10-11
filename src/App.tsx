@@ -701,7 +701,9 @@ export default function App() {
               </p>
             </section>              <section className="section" aria-label="Voice">
               <p className="section-label">Voice input & output</p>
-              {voice.state === "idle" ? (
+              {voice.state === "idle" ||
+              voice.state === "done" ||
+              voice.state === "cancelled" ? (
                 <button
                   type="button"
                   className={`btn voice-btn ${

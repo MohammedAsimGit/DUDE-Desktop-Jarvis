@@ -26,26 +26,70 @@ def test_health_still_works() -> None:
     assert frame["version"] == "0.1.0"
 
 
-def test_voice_surface_intact() -> None:
+def test_voice_surface_intact(monkeypatch) -> None:
     e = Engine(data_dir="tmp")
     status = e.op_voice_status({})
     assert status["state"] == "idle"
 
-    # Starting voice is explicit and user-driven. In an environment without
-    # the optional speech dependencies it must fail with a structured,
-    # truthful error rather than pretending to record.
+    # Starting voice is explicit and user-driven. Force the STT stack
+    # unavailable so this test stays deterministic and never touches real
+    # hardware or a real model: the engine must fail with a structured,
+    # truthful error rather than pretending to record, and must surface
+    # the provider's specific reason.
+    monkeypatch.setattr(
+        e.voice.providers, "stt_available", lambda: False
+    )
+    monkeypatch.setattr(
+        e.voice.providers, "stt_error", lambda: "no VOSK model is installed"
+    )
     resp = e.handle_frame(b'{"v":1,"id":"v1","op":"voice_start"}') or {}
-    if resp.get("ok"):
-        assert resp["result"]["state"] == "recording"
-    else:
-        assert resp["error"]["code"] in {"voice_unavailable", "voice_not_allowed"}
+    assert resp.get("ok") is False
+    assert resp["error"]["code"] == "voice_unavailable"
+    assert "VOSK model" in resp["error"]["message"]
 
     # voice_stop outside recording must be rejected, never crash.
-    state_now = e.op_voice_status({})["state"]
-    if state_now != "recording":
-        stop = e.handle_frame(b'{"v":1,"id":"v2","op":"voice_stop"}') or {}
-        assert stop.get("ok") is False
-        assert stop["error"]["code"] == "voice_not_allowed"
+    stop = e.handle_frame(b'{"v":1,"id":"v2","op":"voice_stop"}') or {}
+    assert stop.get("ok") is False
+    assert stop["error"]["code"] == "voice_not_allowed"
+
+
+def test_voice_restart_after_terminal_state(monkeypatch) -> None:
+    """A cancelled session must not block the next Start/Retry click."""
+
+    class FakeSTT:
+        def start_capture(self) -> None:
+            pass
+
+        def stop_capture(self) -> str:
+            return ""
+
+        def cancel(self) -> None:
+            pass
+
+    e = Engine(data_dir="tmp")
+    # Deterministic in-memory provider: no hardware, no model.
+    monkeypatch.setattr(e.voice.providers, "stt_available", lambda: True)
+    monkeypatch.setattr(e.voice.providers, "stt", lambda: FakeSTT())
+
+    # Simulate a finished session stuck in a terminal state.
+    e.voice.state = "cancelled"
+    resp = e.op_voice_start({})
+    assert resp["state"] == "recording"
+
+    # Same from a terminal error state: retry must be accepted, not busy.
+    e.voice.state = "error"
+    e.voice.error = "boom"
+    resp2 = e.op_voice_start({})
+    assert resp2["state"] == "recording"
+
+    # An in-progress session is still protected from overlapping starts.
+    busy = e.handle_frame(b'{"v":1,"id":"v9","op":"voice_start"}') or {}
+    assert busy.get("ok") is False
+    assert busy["error"]["code"] == "voice_busy"
+
+    # Cancel releases the session cleanly and the mic-fake resources.
+    cancel = e.op_voice_cancel({})
+    assert cancel["state"] == "cancelled"
 
 
 def test_ai_status_and_tools() -> None:

@@ -46,6 +46,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,56 @@ class MicrophoneUnavailable(VoiceError):
 
 
 # ---------------------------------------------------------------------------
+# Local STT readiness (dependency + model) checks
+# ---------------------------------------------------------------------------
+
+def vosk_model_path() -> Optional[Any]:
+    """Return the model directory the INSTALLED recognizer actually loads.
+
+    SpeechRecognition resolves the VOSK model relative to its own package
+    files (see ``speech_recognition/recognizers/vosk.py``), not relative to
+    the project. We mirror that exact resolution from the installed module so
+    setup and runtime can never disagree about the location; ``None`` means
+    the package layout could not be read (treated as "not configured").
+    """
+    try:
+        from speech_recognition.recognizers import vosk as vosk_recognizer
+
+        return Path(vosk_recognizer.__file__).parent.parent / "models" / "vosk"
+    except Exception:  # noqa: BLE001 - layout probe must never crash the engine
+        return None
+
+
+def ensure_vosk_ready() -> None:
+    """Raise ``STTUnavailable`` unless the local VOSK stack is complete.
+
+    Checked when the provider is first created, so the UI reports the real
+    cause (runtime missing vs. model missing) *before* the microphone opens
+    instead of after a pointless recording.
+    """
+    try:
+        import vosk  # noqa: F401 - runtime availability probe
+    except ImportError as exc:
+        raise STTUnavailable(
+            "the VOSK runtime is not installed (add the project's voice "
+            "dependencies: scripts\\setup-voice.ps1)."
+        ) from exc
+
+    model_path = vosk_model_path()
+    if model_path is None or not model_path.exists():
+        shown = str(model_path) if model_path else "<unknown location>"
+        raise STTUnavailable(
+            "no VOSK model is installed at "
+            f"{shown}. Run scripts\\setup-voice.ps1 to download one."
+        )
+    if not (model_path / "am").exists():
+        raise STTUnavailable(
+            f"the VOSK model at {model_path} looks incomplete (missing 'am'). "
+            "Re-run scripts\\setup-voice.ps1."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Shared provider state
 # ---------------------------------------------------------------------------
 
@@ -133,6 +184,14 @@ class VoiceProviders:
         except VoiceError as exc:
             self._stt_error = str(exc)
             raise
+
+    def stt_error(self) -> Optional[str]:
+        """The last detailed speech-to-text failure, if any.
+
+        Lets callers surface the specific cause (missing runtime, missing
+        model, ...) instead of a generic "not available" message.
+        """
+        return self._stt_error
 
     def stt_available(self) -> bool:
         """Whether speech-to-text can be used right now."""
@@ -217,6 +276,10 @@ class _VoskSTT(BaseSTT):
                 "dependencies)."
             ) from exc
 
+        # Runtime + model must exist before we ever claim to be listening;
+        # a clear "not set up" beat a recording that can only fail later.
+        ensure_vosk_ready()
+
         self._recognizer: "sr.Recognizer" = sr.Recognizer()
         self._recognizer.energy_threshold = 300  # keep offline VOSK captures snappy
         self._recognizer.dynamic_energy_threshold = False
@@ -225,11 +288,29 @@ class _VoskSTT(BaseSTT):
 
     def start_capture(self) -> None:
         sr = _get_sr()
+
+        # Distinguish "microphone support is not installed" from "no usable
+        # microphone": PyAudio missing is a setup problem, not hardware.
+        try:
+            import pyaudio  # noqa: F401 - audio dependency probe
+        except ImportError as exc:
+            raise STTUnavailable(
+                "microphone support (PyAudio) is not installed (run "
+                "scripts\\setup-voice.ps1)."
+            ) from exc
+
         try:
             self._source = sr.Microphone()
+        except AttributeError as exc:
+            # SpeechRecognition reports a missing PyAudio as AttributeError.
+            raise STTUnavailable(
+                "microphone support (PyAudio) is not installed (run "
+                "scripts\\setup-voice.ps1)."
+            ) from exc
         except Exception as exc:
             raise MicrophoneUnavailable(
-                "no microphone is available for voice input."
+                "no usable microphone was found for voice input. Check the "
+                "Windows microphone settings."
             ) from exc
         try:
             with self._source:
@@ -277,16 +358,32 @@ class _VoskSTT(BaseSTT):
 
         # Use VOSK offline if the recognizer has a VOSK model configured.
         # Otherwise fall back to a clear "not configured" outcome rather than
-        # silently attempting a cloud backend.
+        # silently attempting a cloud backend. Each failure mode gets its own
+        # message so the UI can tell setup problems from recognition bugs.
         try:
             text = self._recognizer.recognize_vosk(audio)
         except sr.UnknownValueError:
             return ""
+        except ImportError as exc:
+            # ``recognize_vosk`` imports the vosk runtime lazily.
+            raise STTUnavailable(
+                "the VOSK runtime is not installed (add the project's voice "
+                "dependencies: scripts\\setup-voice.ps1)."
+            ) from exc
         except sr.RequestError as exc:
             raise STTUnavailable(
                 "speech recognition is not configured for offline use."
             ) from exc
         except Exception as exc:
+            if type(exc).__name__ == "SetupError":
+                # Raised by SpeechRecognition when the model directory is
+                # absent (SetupError is not re-exported at package level).
+                model_path = vosk_model_path()
+                shown = str(model_path) if model_path else "<unknown location>"
+                raise STTUnavailable(
+                    f"no VOSK model is installed at {shown}. Run "
+                    "scripts\\setup-voice.ps1 to download one."
+                ) from exc
             logger.warning("VOSK recognition error: %s", exc)
             raise STTUnavailable("speech recognition failed.") from exc
 
@@ -409,7 +506,10 @@ class VoiceSession:
             self._cancel_in_flight()
         if not self.providers.stt_available():
             self.state = _VOICE_ERROR
-            self.error = "speech recognition is not available"
+            self.error = (
+                self.providers.stt_error()
+                or "speech recognition is not available"
+            )
             return
 
         with self._lock:
