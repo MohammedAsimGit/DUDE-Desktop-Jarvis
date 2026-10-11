@@ -210,6 +210,48 @@ body {
   padding: 12px;
 }
 
+/* ---- Optional full-screen desktop layer ---- */
+
+/* The window covers the whole display and stays transparent, so the real
+ * desktop and any window behind it remain visible everywhere the panel does
+ * not paint. The panel is anchored top-right (clear of a bottom taskbar) and
+ * is never taller than the display allows; its body scrolls as usual. */
+.companion.is-fullscreen {
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 24px;
+}
+
+.companion.is-fullscreen .panel {
+  flex: 0 1 auto;
+  width: 420px;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 20px;
+  padding: 12px;
+  /* The layer is a fixed overlay: it must not be draggable off the screen. */
+  cursor: default;
+}
+
+.companion.is-fullscreen .panel:active {
+  cursor: default;
+}
+
+/* Entry/exit control for full-screen mode, labelled rather than an icon
+ * alone so the way back out is always obvious. */
+.exit-fullscreen-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.exit-fullscreen-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
 /* Expanded content area. The native window has a bounded height, so the body
  * is the scroll container: everything below the header — status card, voice
  * controls, transcript and chat — stays reachable at any display scale

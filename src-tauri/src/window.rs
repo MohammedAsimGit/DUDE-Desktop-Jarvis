@@ -9,7 +9,17 @@
 //! dependencies** (and no new capability permissions). The FFI is a thin
 //! edge; all placement math is pure and unit-tested below.
 
-use tauri::{LogicalSize, Manager, PhysicalPosition, WebviewWindow};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
+
+/// True while the optional full-screen desktop layer is up. Kept here so the
+/// layout command and the exit path always agree on the window state.
+static FULLSCREEN: AtomicBool = AtomicBool::new(false);
+
+/// Which companion layout to restore when the full-screen layer is left.
+/// `set_companion_expanded` records the choice but does not resize while
+/// full-screen mode is active, so this is the layout the user returns to.
+static EXPANDED_STATE: AtomicBool = AtomicBool::new(false);
 
 /// Gap kept between the companion and the work-area edges, in logical
 /// pixels (scaled to physical pixels per display before use).
@@ -152,7 +162,75 @@ pub fn set_companion_expanded(
     window: tauri::WebviewWindow,
     expanded: bool,
 ) -> Result<(), String> {
+    EXPANDED_STATE.store(expanded, Ordering::SeqCst);
+    if FULLSCREEN.load(Ordering::SeqCst) {
+        // The full-screen layer owns the window geometry; remember the
+        // choice and apply it when the layer is left.
+        return Ok(());
+    }
     apply_companion_layout(&window, expanded)
+}
+
+/// Enter or leave the optional full-screen desktop layer.
+///
+/// Entering covers the **current display's full monitor bounds** with the
+/// same frameless, transparent window, so the real desktop and any window
+/// behind it stay visible through the areas the panel does not paint. The
+/// bounds come from the window manager in physical pixels, which keeps
+/// display scaling and multiple displays correct instead of guessing at
+/// them. Leaving restores the remembered companion layout.
+///
+/// The applied state is returned so the UI never displays a lie. The
+/// caller's always-on-top choice is left untouched: full-screen mode does
+/// not pin Dude above other windows on its own.
+///
+/// Deliberately no screen capture, no input monitoring, and no new Tauri
+/// capability permission — this is only native window geometry.
+#[tauri::command]
+pub fn set_desktop_fullscreen(
+    window: tauri::WebviewWindow,
+    enabled: bool,
+) -> Result<bool, String> {
+    if !enabled {
+        FULLSCREEN.store(false, Ordering::SeqCst);
+        apply_companion_layout(&window, EXPANDED_STATE.load(Ordering::SeqCst))?;
+        return Ok(false);
+    }
+
+    // The display the window is already on wins; otherwise the primary one.
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .ok_or_else(|| {
+            "no display information is available for full-screen mode".to_string()
+        })?;
+    let origin = monitor.position();
+    let bounds = monitor.size();
+
+    let cover = (|| -> Result<(), String> {
+        window
+            .set_size(PhysicalSize::new(bounds.width, bounds.height))
+            .map_err(|err| format!("could not cover the display: {err}"))?;
+        window
+            .set_position(PhysicalPosition::new(origin.x, origin.y))
+            .map_err(|err| format!("could not move Dude to the display origin: {err}"))?;
+        Ok(())
+    })();
+
+    match cover {
+        Ok(()) => {
+            FULLSCREEN.store(true, Ordering::SeqCst);
+            Ok(true)
+        }
+        Err(err) => {
+            // Never leave a half-applied geometry behind: fall back to the
+            // normal companion layout before reporting the failure.
+            let _ = apply_companion_layout(&window, EXPANDED_STATE.load(Ordering::SeqCst));
+            Err(err)
+        }
+    }
 }
 
 /// Resize `window` to one of the two companion layouts and keep it inside

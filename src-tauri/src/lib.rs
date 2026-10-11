@@ -227,7 +227,8 @@ pub fn run() {
             ai_stream_cancel,
             ai_clear,
             window::set_companion_expanded,
-            window::set_companion_topmost
+            window::set_companion_topmost,
+            window::set_desktop_fullscreen
         ])
         .build(tauri::generate_context!())
         .expect("error while building Dude desktop host")

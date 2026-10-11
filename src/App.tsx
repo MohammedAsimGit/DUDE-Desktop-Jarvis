@@ -82,6 +82,22 @@ function XIcon() {
   );
 }
 
+function FullscreenIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M4 9V4h5v2H6v3H4zm11-5h5v5h-2V6h-3V4zM4 15h2v3h3v2H4v-5zm14 0h2v5h-5v-2h3v-3z" />
+    </svg>
+  );
+}
+
+function ExitFullscreenIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M9 4v5H4V7h3V4h2zm6 0h2v3h3v2h-5V4zM4 15h5v5H7v-3H4v-2zm11 0h5v2h-3v3h-2v-5z" />
+    </svg>
+  );
+}
+
 function PinIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -134,6 +150,9 @@ export default function App() {
   });
   const [expanded, setExpanded] = useState(false);
   const [topmost, setTopmost] = useState(false);
+  // Optional full-screen desktop layer. Off by default; entering it is always
+  // an explicit user action and it is reversible from several places.
+  const [fullscreen, setFullscreen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [opError, setOpError] = useState<string | null>(null);
   const [appearance, setAppearance] = useState<Appearance>(() =>
@@ -261,6 +280,37 @@ export default function App() {
       setOpError(`Always-on-top is unavailable: ${safeError(err)}`);
     }
   }, [topmost]);
+
+  // Enter or leave the optional full-screen desktop layer. The host echoes
+  // back the geometry it actually applied, so the indicator never lies and a
+  // failed attempt leaves the current mode untouched.
+  const toggleFullscreen = useCallback(async () => {
+    const next = !fullscreen;
+    try {
+      const applied = await invoke<boolean>("set_desktop_fullscreen", {
+        enabled: next,
+      });
+      setFullscreen(applied);
+      setOpError(null);
+    } catch (err) {
+      setOpError(
+        `Full-screen desktop mode is unavailable: ${safeError(err)}`,
+      );
+    }
+  }, [fullscreen]);
+
+  // Escape always leaves full-screen mode, so leaving never depends on
+  // finding the exit control.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      void toggleFullscreen();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [fullscreen, toggleFullscreen]);
 
   // Opt-in Windows startup: enable/disable through the documented plugin
   // command; failures stay visible instead of silently reverting.
@@ -552,6 +602,7 @@ export default function App() {
       className={[
         "companion",
         expanded ? "is-expanded" : "",
+        fullscreen ? "is-fullscreen" : "",
         topmost ? "is-topmost" : "",
         voice.state === "recording" ? "is-recording" : "",
       ]
@@ -562,7 +613,10 @@ export default function App() {
       <div
         className="panel"
         id="companion-panel"
-        data-tauri-drag-region="deep"
+        // The panel is the native drag region only in companion mode: while
+        // the full-screen layer is up, dragging would move the layer off the
+        // display it is meant to cover.
+        data-tauri-drag-region={fullscreen ? undefined : "deep"}
       >
         <div className="panel-head">
           <span className="mark" aria-hidden="true">
@@ -652,20 +706,32 @@ export default function App() {
               </span>
             )}
           </span>
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => void toggleExpanded()}
-            aria-expanded={expanded}
-            aria-controls="companion-panel"
-            aria-label={expanded ? "Collapse Dude" : "Expand Dude"}
-            title={expanded ? "Collapse" : "Expand"}
-          >
-            <ChevronIcon up={!expanded} />
-          </button>
+          {fullscreen ? (
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => void toggleFullscreen()}
+              aria-label="Exit full-screen mode"
+              title="Exit full-screen mode (Esc)"
+            >
+              <ExitFullscreenIcon />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => void toggleExpanded()}
+              aria-expanded={expanded}
+              aria-controls="companion-panel"
+              aria-label={expanded ? "Collapse Dude" : "Expand Dude"}
+              title={expanded ? "Collapse" : "Expand"}
+            >
+              <ChevronIcon up={!expanded} />
+            </button>
+          )}
         </div>
 
-        {expanded && (
+        {(expanded || fullscreen) && (
           <div
             className="panel-body"
             id="companion-panel-body"
@@ -673,6 +739,18 @@ export default function App() {
             aria-label="Dude panel content"
             tabIndex={0}
           >
+            {fullscreen && (
+              <button
+                type="button"
+                className="btn exit-fullscreen-btn"
+                onClick={() => void toggleFullscreen()}
+                title="Leave full-screen mode (Esc)"
+              >
+                <ExitFullscreenIcon />
+                Exit full-screen mode
+              </button>
+            )}
+
             <section className="card" aria-label="Engine status">
               <p className="detail">
                 {status.detail}
@@ -706,6 +784,32 @@ export default function App() {
                 {topmost ? "On" : "Off"}
               </span>
             </button>
+
+            <button
+              type="button"
+              className="toggle"
+              aria-pressed={fullscreen}
+              onClick={() => void toggleFullscreen()}
+              title="Cover this display with a transparent Dude layer that shows the real desktop behind it. Leave with Esc or the exit control."
+            >
+              <FullscreenIcon />
+              <span className="toggle-label">Full-screen desktop mode</span>
+              <span className="toggle-state">
+                {fullscreen ? "On" : "Off"}
+              </span>
+            </button>
+            <p className="hint">
+              Shows the real desktop through a transparent layer — no
+              wallpaper and no screenshot. Off by default, and it never pins
+              Dude above other windows unless you turn on Always on top.
+            </p>
+            {fullscreen && (
+              <p className="hint">
+                Other windows stay visible behind the layer, but click them
+                again after leaving full-screen mode. Press Esc or use Exit
+                full-screen mode to leave.
+              </p>
+            )}
 
             <section className="section" aria-label="Appearance">
               <p className="section-label">Appearance</p>
