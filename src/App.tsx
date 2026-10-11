@@ -103,6 +103,20 @@ function safeError(err: unknown): string {
 }
 
 /**
+ * The result of the most recent voice interaction, kept separately from the
+ * engine's live session state.
+ *
+ * `kind` distinguishes a successful transcription from an honest empty
+ * capture and from a failure, and either of the latter two keeps any earlier
+ * recognized text visible instead of dropping it.
+ */
+interface VoiceOutcome {
+  kind: "done" | "empty" | "error";
+  transcript: string;
+  error: string;
+}
+
+/**
  * Dude's companion UI (Sprint 1 + Sprint 2).
  *
  * Compact: a small floating pill showing the assistant mark, the name Dude,
@@ -135,7 +149,13 @@ export default function App() {
     error: "",
   });
   const [voiceBusy, setVoiceBusy] = useState(false);
+  // The result of the last interaction, kept independently of the engine's
+  // session state so it survives the controls returning to "Start listening".
+  const [lastVoice, setLastVoice] = useState<VoiceOutcome | null>(null);
   const fetchVoiceRef = useRef(fetchVoiceStatus);
+  // Last raw status seen from the engine, so one interaction is recorded once
+  // instead of being re-rendered on every poll.
+  const observedVoiceRef = useRef<VoiceStatus | null>(null);
 
   // Read the host's cached status snapshot (never blocks on IPC; the host's
   // health monitor refreshes it every 5 s).
@@ -293,11 +313,35 @@ export default function App() {
       if (cancelled) return;
       try {
         const next = await fetchVoiceRef.current();
-        if (!cancelled && next) {
-          setVoice(next);
-          if (next.state === "idle") {
-            void resetVoice();
+        if (cancelled || !next) return;
+        const before = observedVoiceRef.current;
+        observedVoiceRef.current = next;
+        setVoice(next);
+
+        // Capture the outcome when the session reaches a terminal state. The
+        // recorded result is what the UI shows; it is not derived from the
+        // button state, so a successful transcription can never be mistaken
+        // for "nothing happened".
+        const enteredState = !before || before.state !== next.state;
+        if (next.state === "done") {
+          if (enteredState || before?.transcript !== next.transcript) {
+            setLastVoice(
+              next.transcript
+                ? { kind: "done", transcript: next.transcript, error: "" }
+                : { kind: "empty", transcript: "", error: "" },
+            );
           }
+        } else if (next.state === "error" && enteredState) {
+          // An error must not silently erase a transcript already on screen.
+          setLastVoice((prev) => ({
+            kind: "error",
+            transcript: prev?.kind === "done" ? prev.transcript : "",
+            error: next.error || "Voice input failed.",
+          }));
+        }
+
+        if (next.state === "idle") {
+          void resetVoice();
         }
       } catch {
         if (!cancelled) {
@@ -317,11 +361,18 @@ export default function App() {
     setOpError(message);
   }, []);
 
+  const clearTranscript = useCallback(() => {
+    setLastVoice(null);
+  }, []);
+
   const doStart = useCallback(async () => {
     setVoiceBusy(true);
     setVoiceError(null);
     try {
       await startVoice();
+      // The previous transcript is only cleared once a new interaction has
+      // actually begun; a failed start leaves it on screen.
+      setLastVoice(null);
     } catch (err) {
       setVoiceError(`Could not start listening: ${safeError(err)}`);
     } finally {
@@ -615,7 +666,13 @@ export default function App() {
         </div>
 
         {expanded && (
-          <div className="panel-body">
+          <div
+            className="panel-body"
+            id="companion-panel-body"
+            role="region"
+            aria-label="Dude panel content"
+            tabIndex={0}
+          >
             <section className="card" aria-label="Engine status">
               <p className="detail">
                 {status.detail}
@@ -768,20 +825,42 @@ export default function App() {
               )}
             </section>
 
-            {voice.transcript && voice.state === "done" && (
-              <p
+            {lastVoice?.kind === "error" && (
+              <p className="op-error" role="alert">
+                {lastVoice.error}
+              </p>
+            )}
+
+            {lastVoice && lastVoice.transcript && (
+              <div
                 className="voice-transcript"
                 aria-live="polite"
                 aria-label="Transcript"
               >
-                <span className="voice-transcript-label">You said:</span>
-                {voice.transcript}
-              </p>
+                <div className="voice-transcript-head">
+                  <span className="voice-transcript-label">You said:</span>
+                  <button
+                    type="button"
+                    className="voice-transcript-clear"
+                    onClick={clearTranscript}
+                    title="Clear the transcript"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <p className="voice-transcript-text">
+                  {lastVoice.transcript}
+                </p>
+              </div>
             )}
 
-            {voice.state === "error" && (
-              <p className="op-error" role="alert">
-                {voice.error || "Voice error"}
+            {lastVoice?.kind === "empty" && (
+              <p
+                className="voice-transcript voice-transcript-empty"
+                aria-live="polite"
+              >
+                <span className="voice-transcript-label">You said:</span>
+                No speech was recognized — nothing was captured.
               </p>
             )}
 

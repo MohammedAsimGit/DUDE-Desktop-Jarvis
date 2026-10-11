@@ -17,9 +17,16 @@ pub const EDGE_MARGIN: i32 = 16;
 
 /// Logical sizes (px) of the two companion states. `COMPACT_SIZE` must stay
 /// in sync with `width`/`height` in tauri.conf.json (the window boots at
-/// compact size); `EXPANDED_SIZE` is applied by `set_companion_expanded`.
+/// compact size); `EXPANDED_SIZE` is the *preferred* expanded panel size,
+/// whose height is reduced to fit the display work area (see
+/// [`expanded_height`]) so the panel is never taller than the screen.
 pub const COMPACT_SIZE: (f64, f64) = (272.0, 76.0);
-pub const EXPANDED_SIZE: (f64, f64) = (272.0, 440.0);
+pub const EXPANDED_SIZE: (f64, f64) = (272.0, 560.0);
+
+/// Smallest logical height the expanded panel may shrink to. Below this the
+/// panel stops following the work area so the header and the first controls
+/// stay usable instead of collapsing to nothing.
+pub const MIN_EXPANDED_HEIGHT: f64 = 240.0;
 
 /// Usable display rectangle (monitor minus taskbar), physical pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +60,32 @@ pub fn bottom_right_origin(area: &WorkArea, width: u32, height: u32, margin: i32
     let x = (area.right - width - margin).clamp(area.left, max_x);
     let y = (area.bottom - height - margin).clamp(area.top, max_y);
     (x, y)
+}
+
+/// Logical height the expanded panel may use on a display whose work area is
+/// `area` (physical pixels) at `scale`.
+///
+/// The preferred height is `EXPANDED_SIZE.1`, but it is reduced so the window
+/// plus the companion's edge margin at the top and bottom still fits inside
+/// the work area — on short or heavily scaled displays a fixed height would
+/// push the panel off-screen. It only shrinks below [`MIN_EXPANDED_HEIGHT`]
+/// when the display itself is smaller than that.
+pub fn expanded_height(area: &WorkArea, scale: f64) -> f64 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let available = area.height() as f64 / scale - 2.0 * f64::from(EDGE_MARGIN);
+    if available <= 0.0 {
+        return MIN_EXPANDED_HEIGHT;
+    }
+    // Preferred height, shrunk to whatever the work area actually offers.
+    // Only when even the minimum would not fit does it go below the minimum.
+    EXPANDED_SIZE
+        .1
+        .min(available)
+        .max(MIN_EXPANDED_HEIGHT.min(available))
 }
 
 /// Clamp an arbitrary origin so a `width`×`height` window is fully contained
@@ -109,22 +142,36 @@ fn clamp_to_work_area(window: &WebviewWindow) {
 
 /// Switch between the compact pill and the expanded panel by resizing the
 /// native window (not CSS): the window manager, taskbar, and hit-testing
-/// all see the real size. The caller-visible failure is returned as a
-/// string so the UI can surface it instead of silently doing nothing.
+/// all see the real size. The expanded height comes from the primary work
+/// area (see [`expanded_height`]) rather than a fixed value, so the panel
+/// fits short and heavily scaled displays. The caller-visible failure is
+/// returned as a string so the UI can surface it instead of silently doing
+/// nothing.
 #[tauri::command]
 pub fn set_companion_expanded(
     window: tauri::WebviewWindow,
     expanded: bool,
 ) -> Result<(), String> {
+    apply_companion_layout(&window, expanded)
+}
+
+/// Resize `window` to one of the two companion layouts and keep it inside
+/// the work area. Shared by the expand toggle: the panel body scrolls, so
+/// the window only needs to be as tall as the display allows.
+fn apply_companion_layout(window: &tauri::WebviewWindow, expanded: bool) -> Result<(), String> {
     let (w, h) = if expanded {
-        EXPANDED_SIZE
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let height = primary_work_area()
+            .map(|area| expanded_height(&area, scale))
+            .unwrap_or(EXPANDED_SIZE.1);
+        (EXPANDED_SIZE.0, height)
     } else {
         COMPACT_SIZE
     };
     window
         .set_size(LogicalSize::new(w, h))
         .map_err(|err| format!("window resize failed: {err}"))?;
-    clamp_to_work_area(&window);
+    clamp_to_work_area(window);
     Ok(())
 }
 
@@ -289,6 +336,75 @@ mod tests {
     #[test]
     fn clamp_handles_window_larger_than_work_area() {
         assert_eq!(clamp_origin(&area(), 50, 50, 4000, 3000), (0, 0));
+    }
+
+    #[test]
+    fn expanded_height_uses_the_preferred_height_on_a_roomy_display() {
+        // 1080p at 100% scale: plenty of room, so the preferred height wins.
+        assert_eq!(expanded_height(&area(), 1.0), EXPANDED_SIZE.1);
+    }
+
+    #[test]
+    fn expanded_height_follows_a_short_work_area() {
+        // A work area shorter than the preferred panel height: the panel is
+        // reduced to what actually fits between the margins.
+        let short = WorkArea {
+            left: 0,
+            top: 0,
+            right: 1366,
+            bottom: 520,
+        };
+        let height = expanded_height(&short, 1.0);
+        assert_eq!(height, 520.0 - 2.0 * f64::from(EDGE_MARGIN));
+        assert!(height < EXPANDED_SIZE.1);
+    }
+
+    #[test]
+    fn expanded_height_accounts_for_display_scaling() {
+        // 2560x1000 physical at 200% is only 500 logical px tall (468 usable),
+        // so the panel must shrink even though the physical size looks large.
+        let doubled = WorkArea {
+            left: 0,
+            top: 0,
+            right: 2560,
+            bottom: 1000,
+        };
+        assert_eq!(expanded_height(&doubled, 2.0), 1000.0 / 2.0 - 32.0);
+    }
+
+    #[test]
+    fn expanded_height_respects_the_minimum_on_tiny_displays() {
+        let tiny = WorkArea {
+            left: 0,
+            top: 0,
+            right: 800,
+            bottom: 600,
+        };
+        // 600 - 32 = 568 available, more than the preferred height, so the
+        // preferred height is kept (no unnecessary shrinking).
+        assert_eq!(expanded_height(&tiny, 1.0), EXPANDED_SIZE.1);
+        let smaller = WorkArea {
+            left: 0,
+            top: 0,
+            right: 800,
+            bottom: 200,
+        };
+        // 200 - 32 = 168 available: below the minimum, so shrink to what fits.
+        assert_eq!(expanded_height(&smaller, 1.0), 168.0);
+    }
+
+    #[test]
+    fn expanded_height_never_panics_on_a_degenerate_area() {
+        let empty = WorkArea {
+            left: 10,
+            top: 10,
+            right: 10,
+            bottom: 10,
+        };
+        assert_eq!(expanded_height(&empty, 1.0), MIN_EXPANDED_HEIGHT);
+        // A bogus scale factor must not produce NaN or an inverted height.
+        assert_eq!(expanded_height(&area(), 0.0), EXPANDED_SIZE.1);
+        assert!(expanded_height(&area(), f64::NAN) > 0.0);
     }
 
     #[test]

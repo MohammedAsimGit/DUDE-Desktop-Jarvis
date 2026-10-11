@@ -210,12 +210,28 @@ body {
   padding: 12px;
 }
 
+/* Expanded content area. The native window has a bounded height, so the body
+ * is the scroll container: everything below the header — status card, voice
+ * controls, transcript and chat — stays reachable at any display scale
+ * instead of being clipped at the panel edge. Nothing here hides content. */
 .panel-body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1 1 auto;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--pill-border-hover) transparent;
+}
+
+/* Keyboard scrolling target: focus is always visible when reached by Tab. */
+.panel-body:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 14px;
 }
 
 /* Engine status card (Phase 0 content). */
@@ -559,6 +575,9 @@ body {
   border-color: var(--accent);
 }
 
+/* Transcript of the last interaction. It deliberately outlives the voice
+ * state: it stays on screen after the controls return to "Start listening"
+ * until the next interaction begins or the user clears it. */
 .voice-transcript {
   margin: 0;
   padding: 9px 11px;
@@ -570,9 +589,56 @@ body {
   line-height: 1.4;
 }
 
+.voice-transcript-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
 .voice-transcript-label {
   color: var(--text-dim);
   margin-right: 6px;
+}
+
+.voice-transcript-text {
+  margin: 0;
+  word-break: break-word;
+  user-select: text;
+}
+
+.voice-transcript-clear {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--pill-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.voice-transcript-clear:hover {
+  border-color: var(--pill-border-hover);
+  background: var(--btn-hover);
+  color: var(--text);
+}
+
+.voice-transcript-clear:active {
+  background: var(--btn-active);
+}
+
+/* An empty recognition result is its own outcome: it is reported honestly
+ * instead of looking like the session vanished. */
+.voice-transcript-empty {
+  color: var(--text-dim);
+  font-style: italic;
 }
 
 .is-recording .panel {
